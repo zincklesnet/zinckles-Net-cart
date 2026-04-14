@@ -1,0 +1,384 @@
+/**
+ * Zinckles Net Cart — Admin Stylesheet
+ *
+ * Shared across Network Admin, Main Site, and Subsite admin panels.
+ *
+ * @package ZincklesNetCart
+ * @since   1.0.0
+ */
+
+/* ═══════════════════════════════════════════════════════════
+   Layout & Cards
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-admin-wrap {
+    max-width: 1100px;
+}
+
+.znc-admin-wrap h1 {
+    font-weight: 600;
+    margin-bottom: 20px;
+}
+
+.znc-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.znc-card h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 0 12px 0;
+    padding: 0 0 10px 0;
+    border-bottom: 1px solid #f0f0f0;
+    color: #1d2327;
+}
+
+.znc-card h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 16px 0 8px;
+    color: #2c3338;
+}
+
+.znc-card .form-table th {
+    padding-left: 0;
+    font-weight: 500;
+    color: #2c3338;
+    width: 220px;
+}
+
+.znc-card .form-table td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+.znc-card .form-table td .description {
+    margin-top: 6px;
+    color: #787c82;
+    font-style: normal;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Stats Grid
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 16px;
+    margin-top: 12px;
+}
+
+.znc-stat {
+    background: #f8f9fa;
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+}
+
+.znc-stat-number {
+    display: block;
+    font-size: 28px;
+    font-weight: 700;
+    color: #1d2327;
+    line-height: 1.2;
+}
+
+.znc-stat-label {
+    display: block;
+    font-size: 12px;
+    color: #787c82;
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Status Indicators
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    vertical-align: middle;
+}
+
+.znc-dot-green  { background: #00a32a; }
+.znc-dot-red    { background: #d63638; }
+.znc-dot-amber  { background: #dba617; }
+.znc-dot-grey   { background: #c3c4c7; }
+
+.znc-icon-green { color: #00a32a; }
+.znc-icon-red   { color: #d63638; }
+.znc-icon-grey  { color: #c3c4c7; }
+
+.znc-color-green { color: #00a32a; }
+.znc-color-amber { color: #dba617; }
+.znc-color-grey  { color: #787c82; }
+
+/* ═══════════════════════════════════════════════════════════
+   Badges
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.znc-badge-blue {
+    background: #e8f0fe;
+    color: #1a56db;
+}
+
+.znc-badge-green {
+    background: #ecfdf5;
+    color: #059669;
+}
+
+.znc-badge-amber {
+    background: #fffbeb;
+    color: #d97706;
+}
+
+.znc-badge-red {
+    background: #fef2f2;
+    color: #dc2626;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Sites Table
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-sites-table .znc-enrolled {
+    background-color: #f0fdf4;
+}
+
+.znc-sites-table .znc-not-enrolled {
+    opacity: 0.75;
+}
+
+.znc-btn-enroll {
+    color: #00a32a !important;
+    border-color: #00a32a !important;
+}
+
+.znc-btn-unenroll {
+    color: #d63638 !important;
+    border-color: #d63638 !important;
+}
+
+.znc-connection-result {
+    display: inline-block;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Product Tags (Include/Exclude Selectors)
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-product-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #f0f0f1;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    padding: 4px 10px;
+    margin: 3px 4px 3px 0;
+    font-size: 13px;
+}
+
+.znc-product-tag .znc-remove-product {
+    background: none;
+    border: none;
+    color: #d63638;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 0 2px;
+    line-height: 1;
+}
+
+.znc-product-tag .znc-remove-product:hover {
+    color: #a00;
+}
+
+.znc-search-result {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f0f0f1;
+    font-size: 13px;
+}
+
+.znc-search-result:hover {
+    background: #f8f9fa;
+}
+
+.znc-search-result .button {
+    margin-right: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Modal / Overlay
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.znc-modal {
+    background: #fff;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.znc-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.znc-modal-header h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.znc-modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #787c82;
+    padding: 4px 8px;
+    line-height: 1;
+}
+
+.znc-modal-close:hover {
+    color: #1d2327;
+}
+
+.znc-modal-body {
+    padding: 24px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.znc-modal-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-top: 1px solid #e0e0e0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Log Viewer
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-log-viewer {
+    background: #1d2327;
+    color: #c3c4c7;
+    border-radius: 8px;
+    padding: 16px;
+    max-height: 400px;
+    overflow-y: auto;
+    margin: 12px 0;
+}
+
+.znc-log-viewer pre {
+    margin: 0;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Quick Links Grid
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-quick-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.znc-quick-links .button {
+    font-size: 14px;
+    padding: 8px 16px;
+    height: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Brand Preview
+   ═══════════════════════════════════════════════════════════ */
+
+.znc-brand-preview {
+    background: #f8f9fa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 16px;
+    display: inline-block;
+}
+
+.znc-brand-preview-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 14px;
+    border-radius: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Responsive
+   ═══════════════════════════════════════════════════════════ */
+
+@media (max-width: 782px) {
+    .znc-card .form-table th {
+        width: 100%;
+        display: block;
+        padding-bottom: 4px;
+    }
+
+    .znc-card .form-table td {
+        display: block;
+        padding-left: 0;
+    }
+
+    .znc-stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .znc-modal {
+        width: 95%;
+        max-height: 90vh;
+    }
+}
