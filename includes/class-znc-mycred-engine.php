@@ -1,159 +1,224 @@
 <?php
+/**
+ * MyCred Engine — multi-point-type support.
+ *
+ * v1.2.0: Detects ALL registered MyCred point types, not just 'zcreds'.
+ * Each type has its own exchange rate, max %, and enabled state.
+ *
+ * @package ZincklesNetCart
+ * @since   1.0.0
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_MyCred_Engine {
 
-    private $active = false;
-    private $type   = 'mycred_default';
-
     public function init() {
-        $this->active = function_exists( 'mycred' );
-    }
-
-    public function is_available() : bool {
-        return $this->active;
-    }
-
-    public function get_label() : string {
-        if ( ! $this->active ) return 'ZCred';
-        return mycred()->core->singular();
-    }
-
-    public function get_plural_label() : string {
-        if ( ! $this->active ) return 'ZCreds';
-        return mycred()->core->plural();
+        add_filter( 'znc_mycred_config', array( $this, 'get_config' ) );
     }
 
     /**
-     * Get user's current balance.
+     * Check if MyCred is available at all.
      */
-    public function get_balance( int $user_id ) : float {
-        if ( ! $this->active ) return 0;
-        return floatval( mycred_get_users_balance( $user_id, $this->type ) );
+    public function is_available() {
+        return function_exists( 'mycred' ) && function_exists( 'mycred_get_types' );
     }
 
     /**
-     * Get the exchange rate: how much 1 ZCred is worth in base currency.
+     * Get all enabled point types with their settings.
      */
-    public function get_exchange_rate() : float {
-        $network  = get_site_option( 'znc_network_settings', array() );
-        return floatval( $network['zcred_exchange_rate'] ?? 0.01 );
+    public function get_enabled_types() {
+        if ( ! $this->is_available() ) {
+            return array();
+        }
+
+        $settings = get_site_option( 'znc_network_settings', array() );
+
+        if ( empty( $settings['mycred_enabled'] ) ) {
+            return array();
+        }
+
+        $configured_types = (array) ( $settings['mycred_point_types'] ?? array() );
+
+        if ( empty( $configured_types ) ) {
+            // Fallback: use registered MyCred types with default settings.
+            $registered = mycred_get_types();
+            foreach ( $registered as $slug => $label ) {
+                $configured_types[ $slug ] = array(
+                    'slug'          => $slug,
+                    'label'         => $label,
+                    'exchange_rate' => (float) ( $settings['mycred_exchange_rate'] ?? 1.0 ),
+                    'max_percent'   => (int) ( $settings['mycred_max_percent'] ?? 50 ),
+                    'enabled'       => true,
+                );
+            }
+        }
+
+        // Filter to only enabled types.
+        return array_filter( $configured_types, function ( $type ) {
+            return ! empty( $type['enabled'] );
+        } );
     }
 
     /**
-     * Get the maximum percentage of a cart total payable with ZCreds.
+     * Get a user's balance for a specific point type.
      */
-    public function get_max_percent() : int {
-        $network = get_site_option( 'znc_network_settings', array() );
-        return intval( $network['zcred_max_percent'] ?? 100 );
+    public function get_balance( $user_id, $point_type = 'mycred_default' ) {
+        if ( ! $this->is_available() ) {
+            return 0;
+        }
+
+        $mycred = mycred( $point_type );
+        if ( ! $mycred ) {
+            return 0;
+        }
+
+        return (float) $mycred->get_users_balance( $user_id );
     }
 
     /**
-     * Calculate parallel total showing ZCred potential.
+     * Get balances for ALL enabled point types for a user.
      */
-    public function get_parallel_total( int $user_id, float $cart_total ) : array {
-        $balance       = $this->get_balance( $user_id );
-        $rate          = $this->get_exchange_rate();
-        $max_pct       = $this->get_max_percent();
-        $max_by_pct    = $cart_total * ( $max_pct / 100 );
-        $max_by_balance = $balance * $rate;
-        $max_applicable = min( $max_by_pct, $max_by_balance, $cart_total );
-        $credits_needed = $rate > 0 ? ceil( $max_applicable / $rate ) : 0;
+    public function get_all_balances( $user_id ) {
+        $types    = $this->get_enabled_types();
+        $balances = array();
+
+        foreach ( $types as $slug => $type ) {
+            $balances[ $slug ] = array(
+                'slug'          => $slug,
+                'label'         => $type['label'] ?? $slug,
+                'balance'       => $this->get_balance( $user_id, $slug ),
+                'exchange_rate' => (float) ( $type['exchange_rate'] ?? 1.0 ),
+                'max_percent'   => (int) ( $type['max_percent'] ?? 50 ),
+            );
+        }
+
+        return $balances;
+    }
+
+    /**
+     * Calculate parallel totals for all point types against an order total.
+     */
+    public function get_parallel_totals( $user_id, $order_total, $base_currency = 'CAD' ) {
+        $balances = $this->get_all_balances( $user_id );
+        $totals   = array();
+
+        foreach ( $balances as $slug => $data ) {
+            $exchange_rate     = $data['exchange_rate'];
+            $max_percent       = $data['max_percent'];
+            $balance           = $data['balance'];
+            $max_applicable    = $order_total * ( $max_percent / 100 );
+            $balance_in_currency = $balance * $exchange_rate;
+            $applicable        = min( $max_applicable, $balance_in_currency );
+            $points_to_deduct  = $exchange_rate > 0 ? $applicable / $exchange_rate : 0;
+
+            $totals[ $slug ] = array(
+                'slug'              => $slug,
+                'label'             => $data['label'],
+                'balance'           => $balance,
+                'exchange_rate'     => $exchange_rate,
+                'max_percent'       => $max_percent,
+                'max_applicable'    => round( $max_applicable, 2 ),
+                'balance_value'     => round( $balance_in_currency, 2 ),
+                'applicable_value'  => round( $applicable, 2 ),
+                'points_to_deduct'  => floor( $points_to_deduct ),
+                'remaining_monetary' => round( $order_total - $applicable, 2 ),
+            );
+        }
+
+        return $totals;
+    }
+
+    /**
+     * Validate that a user has enough points for a deduction.
+     */
+    public function validate_deduction( $user_id, $point_type, $amount ) {
+        $balance = $this->get_balance( $user_id, $point_type );
+        return $balance >= $amount;
+    }
+
+    /**
+     * Deduct points from a user.
+     */
+    public function deduct( $user_id, $point_type, $amount, $reference = 'znc_checkout', $data = array() ) {
+        if ( ! $this->is_available() ) {
+            return new WP_Error( 'mycred_unavailable', 'MyCred is not available.' );
+        }
+
+        $mycred = mycred( $point_type );
+        if ( ! $mycred ) {
+            return new WP_Error( 'invalid_type', 'Invalid point type: ' . $point_type );
+        }
+
+        if ( ! $this->validate_deduction( $user_id, $point_type, $amount ) ) {
+            return new WP_Error( 'insufficient_balance', sprintf(
+                'Insufficient %s balance. Required: %s, Available: %s',
+                $point_type, $amount, $this->get_balance( $user_id, $point_type )
+            ) );
+        }
+
+        $entry = sprintf(
+            'Net Cart checkout — Order #%s',
+            $data['order_id'] ?? 'unknown'
+        );
+
+        $mycred->add_creds(
+            $reference,
+            $user_id,
+            0 - abs( $amount ),
+            $entry,
+            $data['order_id'] ?? 0,
+            $data
+        );
 
         return array(
-            'available'       => $this->active,
-            'balance'         => $balance,
-            'exchange_rate'   => $rate,
-            'max_percent'     => $max_pct,
-            'max_applicable'  => round( $max_applicable, 2 ),
-            'credits_needed'  => $credits_needed,
-            'monetary_value'  => round( $max_applicable, 2 ),
-            'remaining_total' => round( $cart_total - $max_applicable, 2 ),
-            'label'           => $this->get_plural_label(),
+            'deducted'    => $amount,
+            'point_type'  => $point_type,
+            'new_balance' => $this->get_balance( $user_id, $point_type ),
         );
     }
 
     /**
-     * Validate a ZCred deduction before processing.
+     * Refund points to a user (compensating action on checkout failure).
      */
-    public function validate_deduction( int $user_id, float $amount, float $cart_total ) {
-        if ( ! $this->active ) {
-            return new WP_Error( 'znc_mycred_unavailable', 'ZCreds system is not available.', array( 'status' => 400 ) );
+    public function refund( $user_id, $point_type, $amount, $data = array() ) {
+        if ( ! $this->is_available() ) {
+            return new WP_Error( 'mycred_unavailable', 'MyCred is not available.' );
         }
 
-        $balance  = $this->get_balance( $user_id );
-        $rate     = $this->get_exchange_rate();
-        $max_pct  = $this->get_max_percent();
-        $max_val  = $cart_total * ( $max_pct / 100 );
-        $monetary = $amount * $rate;
-
-        if ( $amount > $balance ) {
-            return new WP_Error( 'znc_insufficient_zcreds', sprintf(
-                'Insufficient %s balance: have %.2f, need %.2f.',
-                $this->get_plural_label(), $balance, $amount
-            ), array( 'status' => 400, 'balance' => $balance, 'requested' => $amount ) );
+        $mycred = mycred( $point_type );
+        if ( ! $mycred ) {
+            return new WP_Error( 'invalid_type', 'Invalid point type: ' . $point_type );
         }
 
-        if ( $monetary > $max_val ) {
-            return new WP_Error( 'znc_zcred_exceeds_max', sprintf(
-                '%s value ($%.2f) exceeds maximum allowed (%.0f%% = $%.2f).',
-                $this->get_plural_label(), $monetary, $max_pct, $max_val
-            ), array( 'status' => 400 ) );
-        }
+        $entry = sprintf(
+            'Net Cart refund — Order #%s',
+            $data['order_id'] ?? 'unknown'
+        );
+
+        $mycred->add_creds(
+            'znc_refund',
+            $user_id,
+            abs( $amount ),
+            $entry,
+            $data['order_id'] ?? 0,
+            $data
+        );
 
         return array(
-            'valid'          => true,
-            'amount'         => $amount,
-            'monetary_value' => round( $monetary, 2 ),
-            'remaining'      => round( $cart_total - $monetary, 2 ),
-            'new_balance'    => $balance - $amount,
+            'refunded'    => $amount,
+            'point_type'  => $point_type,
+            'new_balance' => $this->get_balance( $user_id, $point_type ),
         );
     }
 
     /**
-     * Deduct ZCreds from user balance.
+     * Get config for filters.
      */
-    public function deduct( int $user_id, float $amount, string $reason = '' ) {
-        if ( ! $this->active ) {
-            return new WP_Error( 'znc_mycred_unavailable', 'ZCreds not available.' );
-        }
-        if ( $amount <= 0 ) return true;
-
-        $result = mycred_subtract( 'net_cart_checkout', $user_id, $amount, $reason, '', $this->type );
-        if ( ! $result ) {
-            return new WP_Error( 'znc_deduct_failed', 'Failed to deduct ZCreds.' );
-        }
-
-        do_action( 'znc_zcreds_deducted', $user_id, $amount, $reason );
-        return true;
-    }
-
-    /**
-     * Refund ZCreds to user balance (rollback).
-     */
-    public function refund( int $user_id, float $amount, string $reason = '' ) {
-        if ( ! $this->active || $amount <= 0 ) return true;
-
-        mycred_add( 'net_cart_refund', $user_id, $amount, $reason, '', $this->type );
-        do_action( 'znc_zcreds_refunded', $user_id, $amount, $reason );
-        return true;
-    }
-
-    /**
-     * Award ZCreds for a completed purchase.
-     */
-    public function award_purchase( int $user_id, float $order_total, array $items = array() ) {
-        if ( ! $this->active ) return;
-
-        $main = get_option( 'znc_main_settings', array() );
-        if ( empty( $main['zcred_earn_enabled'] ) ) return;
-
-        $base_rate = floatval( $main['zcred_earn_rate'] ?? 1 );
-        $earned    = floor( $order_total * $base_rate );
-
-        if ( $earned > 0 ) {
-            mycred_add( 'net_cart_purchase', $user_id, $earned, 'Net Cart purchase reward', '', $this->type );
-            do_action( 'znc_zcreds_awarded', $user_id, $earned, $order_total );
-        }
+    public function get_config() {
+        return array(
+            'available'    => $this->is_available(),
+            'enabled_types' => $this->get_enabled_types(),
+        );
     }
 }

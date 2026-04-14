@@ -2,10 +2,9 @@
 /**
  * PSR-4-style autoloader for Zinckles Net Cart.
  *
- * Maps class prefixes: ZNC_  →  includes/class-znc-*.php
- *                      ZNC_  →  admin/class-znc-*.php
+ * Maps class prefixes:  ZNC_ → includes/class-znc-*.php
+ *                       ZNC_ → admin/class-znc-*.php
  */
-
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Autoloader {
@@ -20,7 +19,6 @@ class ZNC_Autoloader {
         }
 
         $file = 'class-' . strtolower( str_replace( '_', '-', $class ) ) . '.php';
-
         $dirs = array(
             ZNC_PLUGIN_DIR . 'includes/',
             ZNC_PLUGIN_DIR . 'admin/',

@@ -1,205 +1,165 @@
 <?php
+/**
+ * Subsite Admin — per-shop settings panel.
+ *
+ * @package ZincklesNetCart
+ * @since   1.0.0
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Subsite_Admin {
 
-    private $defaults = array(
-        'product_mode'        => 'all',
-        'include_products'    => array(),
-        'exclude_products'    => array(),
-        'exclude_categories'  => array(),
-        'exclude_tags'        => array(),
-        'exclude_backorders'  => false,
-        'exclude_on_sale'     => false,
-        'min_price'           => 0,
-        'max_price'           => 0,
-        'include_meta'        => true,
-        'include_images'      => true,
-        'meta_keys'           => array(),
-        'snapshot_trigger'    => 'auto',
-        'shipping_mode'       => 'inherit',
-        'shipping_flat_rate'  => 0,
-        'shipping_free_threshold' => 0,
-        'shipping_note'       => '',
-        'tax_on_shipping'     => true,
-        'tax_mode'            => 'inherit',
-        'tax_rate'            => 0,
-        'tax_label'           => 'Tax',
-        'tax_exempt'          => false,
-        'accept_zcreds'       => true,
-        'zcred_max_percent'   => 100,
-        'zcred_earn_multiplier'=> 1.0,
-        'zcred_bonus_cats'    => array(),
-        'zcred_exclude_products'=> array(),
-        'brand_display_name'  => '',
-        'brand_tagline'       => '',
-        'brand_badge_color'   => '#4f46e5',
-        'brand_icon_url'      => '',
-        'stock_reservation_minutes' => 0,
-        'low_stock_threshold' => 0,
-        'realtime_stock_push' => false,
-        'coupon_available'    => true,
-    );
-
     public function init() {
-        if ( ! is_admin() || is_main_site() ) return;
-        add_action( 'admin_menu', array( $this, 'add_menus' ) );
-        add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
-        add_action( 'wp_ajax_znc_enroll_request', array( $this, 'ajax_enrollment_request' ) );
-        add_action( 'wp_ajax_znc_snapshot_preview', array( $this, 'ajax_snapshot_preview' ) );
+        add_action( 'admin_menu', array( $this, 'register_menu' ) );
+        add_action( 'admin_init', array( $this, 'register_settings' ) );
     }
 
-    public function add_menus() {
+    public function register_menu() {
         add_menu_page(
-            __( 'Net Cart', 'zinckles-net-cart' ),
-            __( 'Net Cart', 'zinckles-net-cart' ),
-            'manage_woocommerce',
+            __( 'Net Cart', 'znc' ),
+            __( 'Net Cart', 'znc' ),
+            'manage_options',
             'znc-subsite',
             array( $this, 'render_dashboard' ),
-            'dashicons-cart',
-            56
+            'dashicons-networking',
+            58
         );
 
-        $pages = array(
-            'znc-subsite'          => __( 'Dashboard', 'zinckles-net-cart' ),
-            'znc-subsite-products' => __( 'Products', 'zinckles-net-cart' ),
-            'znc-subsite-shipping' => __( 'Shipping & Tax', 'zinckles-net-cart' ),
-            'znc-subsite-zcreds'   => __( 'ZCreds', 'zinckles-net-cart' ),
-            'znc-subsite-branding' => __( 'Branding', 'zinckles-net-cart' ),
-            'znc-subsite-stock'    => __( 'Stock', 'zinckles-net-cart' ),
+        add_submenu_page(
+            'znc-subsite',
+            __( 'Products', 'znc' ),
+            __( 'Products', 'znc' ),
+            'manage_options',
+            'znc-subsite-products',
+            array( $this, 'render_products' )
         );
 
-        foreach ( $pages as $slug => $title ) {
-            $callback = 'render_' . str_replace( array( 'znc-subsite-', 'znc-' ), array( '', '' ), $slug );
-            add_submenu_page( 'znc-subsite', $title, $title, 'manage_woocommerce', $slug, array( $this, $callback ) );
-        }
+        add_submenu_page(
+            'znc-subsite',
+            __( 'Branding', 'znc' ),
+            __( 'Branding', 'znc' ),
+            'manage_options',
+            'znc-subsite-branding',
+            array( $this, 'render_branding' )
+        );
     }
 
-    public function enqueue_assets( $hook ) {
-        if ( strpos( $hook, 'znc-subsite' ) === false ) return;
-        wp_enqueue_style( 'znc-admin', ZNC_PLUGIN_URL . 'admin/assets/admin.css', array(), ZNC_VERSION );
-        wp_enqueue_script( 'znc-admin', ZNC_PLUGIN_URL . 'admin/assets/admin.js', array( 'jquery' ), ZNC_VERSION, true );
-        wp_enqueue_style( 'wp-color-picker' );
-        wp_enqueue_script( 'wp-color-picker' );
-        wp_enqueue_media();
-        wp_localize_script( 'znc-admin', 'zncAdmin', array(
-            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-            'nonce'   => wp_create_nonce( 'znc_admin_nonce' ),
+    public function register_settings() {
+        register_setting( 'znc_subsite', 'znc_subsite_settings', array(
+            'sanitize_callback' => array( $this, 'sanitize' ),
         ) );
     }
 
-    private function save_if_posted() {
-        if ( ! isset( $_POST['znc_save_subsite'] ) ) return;
-        check_admin_referer( 'znc_subsite_nonce' );
-
-        $settings = get_option( 'znc_subsite_settings', array() );
-
-        foreach ( $this->defaults as $key => $default ) {
-            if ( is_bool( $default ) ) {
-                $settings[ $key ] = ! empty( $_POST[ $key ] );
-            } elseif ( is_int( $default ) ) {
-                $settings[ $key ] = intval( $_POST[ $key ] ?? $default );
-            } elseif ( is_float( $default ) ) {
-                $settings[ $key ] = floatval( $_POST[ $key ] ?? $default );
-            } elseif ( is_array( $default ) ) {
-                $settings[ $key ] = array_map( 'sanitize_text_field', (array) ( $_POST[ $key ] ?? array() ) );
-            } else {
-                $settings[ $key ] = sanitize_text_field( $_POST[ $key ] ?? $default );
-            }
-        }
-
-        update_option( 'znc_subsite_settings', $settings );
-        add_settings_error( 'znc', 'znc_saved', __( 'Settings saved.', 'zinckles-net-cart' ), 'success' );
+    public function sanitize( $input ) {
+        $clean = array();
+        $clean['display_name']     = sanitize_text_field( $input['display_name'] ?? '' );
+        $clean['tagline']          = sanitize_text_field( $input['tagline'] ?? '' );
+        $clean['badge_color']      = sanitize_hex_color( $input['badge_color'] ?? '#7c3aed' );
+        $clean['badge_icon']       = esc_url_raw( $input['badge_icon'] ?? '' );
+        $clean['product_mode']     = in_array( $input['product_mode'] ?? '', array( 'all', 'include', 'exclude' ), true )
+            ? $input['product_mode'] : 'all';
+        $clean['shipping_mode']    = sanitize_text_field( $input['shipping_mode'] ?? 'inherit' );
+        $clean['shipping_flat_rate'] = floatval( $input['shipping_flat_rate'] ?? 0 );
+        $clean['shipping_free_threshold'] = floatval( $input['shipping_free_threshold'] ?? 0 );
+        $clean['tax_mode']         = sanitize_text_field( $input['tax_mode'] ?? 'inherit' );
+        $clean['tax_rate']         = floatval( $input['tax_rate'] ?? 0 );
+        $clean['tax_label']        = sanitize_text_field( $input['tax_label'] ?? 'Tax' );
+        $clean['zcred_accept']     = ! empty( $input['zcred_accept'] );
+        $clean['zcred_max_percent'] = min( 100, max( 0, absint( $input['zcred_max_percent'] ?? 50 ) ) );
+        $clean['zcred_earn_multiplier'] = floatval( $input['zcred_earn_multiplier'] ?? 1.0 );
+        $clean['custom_meta_keys'] = sanitize_text_field( $input['custom_meta_keys'] ?? '' );
+        return $clean;
     }
-
-    public function get_enrollment_status() : array {
-        global $wpdb;
-        switch_to_blog( get_main_site_id() );
-        $row = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}znc_enrolled_sites WHERE site_id = %d",
-            get_current_blog_id()
-        ), ARRAY_A );
-        restore_current_blog();
-
-        if ( ! $row ) {
-            return array( 'status' => 'not_enrolled', 'enrolled_at' => null );
-        }
-        return $row;
-    }
-
-    public function get_prerequisites() : array {
-        return array(
-            'woocommerce'  => class_exists( 'WooCommerce' ),
-            'mycred'       => function_exists( 'mycred' ),
-            'rest_secret'  => ! empty( get_site_option( 'znc_rest_secret' ) ),
-            'has_products' => function_exists( 'wc_get_products' ) && count( wc_get_products( array( 'limit' => 1, 'return' => 'ids' ) ) ) > 0,
-        );
-    }
-
-    /* ── AJAX ─────────────────────────────────────────────── */
-
-    public function ajax_enrollment_request() {
-        check_ajax_referer( 'znc_admin_nonce', 'nonce' );
-        // Request enrollment from network admin
-        $network = get_site_option( 'znc_network_settings', array() );
-        if ( ( $network['enrollment_mode'] ?? 'opt_in' ) === 'opt_in' ) {
-            global $wpdb;
-            switch_to_blog( get_main_site_id() );
-            $wpdb->replace( $wpdb->prefix . 'znc_enrolled_sites', array(
-                'site_id'     => get_current_blog_id(),
-                'status'      => 'pending',
-                'enrolled_by' => get_current_user_id(),
-            ) );
-            restore_current_blog();
-            wp_send_json_success( array( 'message' => 'Enrollment request submitted.' ) );
-        }
-        wp_send_json_error( array( 'message' => 'Enrollment mode does not allow self-enrollment.' ) );
-    }
-
-    public function ajax_snapshot_preview() {
-        check_ajax_referer( 'znc_admin_nonce', 'nonce' );
-        $snapshot = new ZNC_Cart_Snapshot();
-        wp_send_json_success( $snapshot->build( get_current_user_id() ) );
-    }
-
-    /* ── Renderers ────────────────────────────────────────── */
 
     public function render_dashboard() {
-        $this->save_if_posted();
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-dashboard.php';
-    }
-
-    public function render_subsite() {
-        $this->render_dashboard();
+        $settings    = get_option( 'znc_subsite_settings', array() );
+        $is_enrolled = ZNC_Network_Admin::is_site_enrolled( get_current_blog_id() );
+        $has_wc      = class_exists( 'WooCommerce' );
+        $has_mycred  = function_exists( 'mycred' );
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Net Cart — Shop Dashboard', 'znc' ); ?></h1>
+            <div class="card" style="max-width:600px;">
+                <h2><?php _e( 'Status', 'znc' ); ?></h2>
+                <table class="form-table">
+                    <tr>
+                        <th><?php _e( 'Enrollment', 'znc' ); ?></th>
+                        <td><?php echo $is_enrolled
+                            ? '<span style="color:#2e7d32;font-weight:600;">✅ Enrolled</span>'
+                            : '<span style="color:#f44336;font-weight:600;">❌ Not Enrolled</span>'; ?></td>
+                    </tr>
+                    <tr>
+                        <th><?php _e( 'WooCommerce', 'znc' ); ?></th>
+                        <td><?php echo $has_wc ? '✅ Active' : '❌ Not active'; ?></td>
+                    </tr>
+                    <tr>
+                        <th><?php _e( 'MyCred', 'znc' ); ?></th>
+                        <td><?php echo $has_mycred ? '✅ Active' : '— Not installed'; ?></td>
+                    </tr>
+                    <tr>
+                        <th><?php _e( 'Currency', 'znc' ); ?></th>
+                        <td><code><?php echo function_exists( 'get_woocommerce_currency' ) ? get_woocommerce_currency() : '—'; ?></code></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        <?php
     }
 
     public function render_products() {
-        $this->save_if_posted();
-        $settings = get_option( 'znc_subsite_settings', wp_parse_args( array(), $this->defaults ) );
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-products.php';
-    }
-
-    public function render_shipping() {
-        $this->save_if_posted();
-        $settings = get_option( 'znc_subsite_settings', wp_parse_args( array(), $this->defaults ) );
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-shipping.php';
-    }
-
-    public function render_zcreds() {
-        $this->save_if_posted();
-        $settings = get_option( 'znc_subsite_settings', wp_parse_args( array(), $this->defaults ) );
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-zcreds.php';
+        $settings = get_option( 'znc_subsite_settings', array() );
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Net Cart — Product Settings', 'znc' ); ?></h1>
+            <form method="post" action="options.php">
+                <?php settings_fields( 'znc_subsite' ); ?>
+                <div class="card" style="max-width:600px;">
+                    <table class="form-table">
+                        <tr>
+                            <th><label><?php _e( 'Product Mode', 'znc' ); ?></label></th>
+                            <td>
+                                <select name="znc_subsite_settings[product_mode]">
+                                    <option value="all" <?php selected( $settings['product_mode'] ?? 'all', 'all' ); ?>><?php _e( 'All products', 'znc' ); ?></option>
+                                    <option value="include" <?php selected( $settings['product_mode'] ?? '', 'include' ); ?>><?php _e( 'Include only selected', 'znc' ); ?></option>
+                                    <option value="exclude" <?php selected( $settings['product_mode'] ?? '', 'exclude' ); ?>><?php _e( 'Exclude selected', 'znc' ); ?></option>
+                                </select>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
     }
 
     public function render_branding() {
-        $this->save_if_posted();
-        $settings = get_option( 'znc_subsite_settings', wp_parse_args( array(), $this->defaults ) );
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-branding.php';
-    }
-
-    public function render_stock() {
-        $this->save_if_posted();
-        $settings = get_option( 'znc_subsite_settings', wp_parse_args( array(), $this->defaults ) );
-        include ZNC_PLUGIN_DIR . 'admin/views/subsite-stock.php';
+        $settings = get_option( 'znc_subsite_settings', array() );
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Net Cart — Shop Branding', 'znc' ); ?></h1>
+            <form method="post" action="options.php">
+                <?php settings_fields( 'znc_subsite' ); ?>
+                <div class="card" style="max-width:600px;">
+                    <table class="form-table">
+                        <tr>
+                            <th><label><?php _e( 'Display Name', 'znc' ); ?></label></th>
+                            <td><input type="text" name="znc_subsite_settings[display_name]" value="<?php echo esc_attr( $settings['display_name'] ?? get_bloginfo( 'name' ) ); ?>" class="regular-text"></td>
+                        </tr>
+                        <tr>
+                            <th><label><?php _e( 'Tagline', 'znc' ); ?></label></th>
+                            <td><input type="text" name="znc_subsite_settings[tagline]" value="<?php echo esc_attr( $settings['tagline'] ?? '' ); ?>" class="regular-text"></td>
+                        </tr>
+                        <tr>
+                            <th><label><?php _e( 'Badge Color', 'znc' ); ?></label></th>
+                            <td><input type="color" name="znc_subsite_settings[badge_color]" value="<?php echo esc_attr( $settings['badge_color'] ?? '#7c3aed' ); ?>"></td>
+                        </tr>
+                    </table>
+                </div>
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
     }
 }

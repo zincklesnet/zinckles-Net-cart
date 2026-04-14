@@ -1,9 +1,22 @@
 <?php
+/**
+ * Global Cart Merger — adds items + full cart refresh from all enrolled subsites.
+ *
+ * v1.2.0: Added refresh_all() to pull cart snapshots from every enrolled subsite
+ * so the global cart always reflects the aggregate of ALL shops.
+ *
+ * @package ZincklesNetCart
+ * @since   1.0.0
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Global_Cart_Merger {
 
+    /** @var ZNC_Global_Cart_Store */
     private $store;
+
+    /** @var ZNC_Currency_Handler */
     private $currency;
 
     public function __construct( ZNC_Global_Cart_Store $store, ZNC_Currency_Handler $currency ) {
@@ -12,142 +25,194 @@ class ZNC_Global_Cart_Merger {
     }
 
     public function init() {
-        // Merger is invoked on demand
+        // No hooks needed — called directly by REST endpoints and checkout.
     }
 
     /**
-     * Add an item to the global cart with live validation.
+     * Add a single item to the global cart (from a subsite push or REST call).
      */
-    public function add_item( array $data ) {
-        $site_id    = absint( $data['site_id'] ?? 0 );
-        $product_id = absint( $data['product_id'] ?? 0 );
-        $user_id    = absint( $data['user_id'] ?? get_current_user_id() );
-
-        if ( ! $site_id || ! $product_id || ! $user_id ) {
-            return new WP_Error( 'znc_invalid_item', 'Missing site_id, product_id, or user_id.' );
+    public function add_item( $params ) {
+        $user_id = $params['user_id'] ?? get_current_user_id();
+        if ( ! $user_id ) {
+            return new WP_Error( 'no_user', 'User ID is required.', array( 'status' => 400 ) );
         }
 
-        // Check enrollment
-        if ( ! $this->is_site_enrolled( $site_id ) ) {
-            return new WP_Error( 'znc_not_enrolled', 'This shop is not enrolled in Net Cart.' );
+        $blog_id = absint( $params['blog_id'] ?? 0 );
+        if ( ! $blog_id ) {
+            return new WP_Error( 'no_blog', 'Blog ID is required.', array( 'status' => 400 ) );
         }
 
-        // Validate price/stock on origin subsite
-        $validation = ZNC_REST_Auth::remote_request( $site_id, '/pricing/validate', array(
-            'products' => array( array(
-                'product_id'     => $product_id,
-                'variation_id'   => $data['variation_id'] ?? 0,
-                'quantity'       => $data['quantity'] ?? 1,
-                'expected_price' => $data['unit_price'] ?? 0,
-            ) ),
-        ) );
-
-        if ( is_wp_error( $validation ) ) {
-            // Fall back to provided data if subsite is unreachable
-            $data['user_id'] = $user_id;
-            $line_id = $this->store->upsert_item( $data );
-            if ( ! $line_id ) {
-                return new WP_Error( 'znc_cart_full', 'Cart item limit reached.' );
-            }
-            return $this->store->get_cart( $user_id );
+        // Check enrollment.
+        if ( ! ZNC_Network_Admin::is_site_enrolled( $blog_id ) ) {
+            return new WP_Error( 'not_enrolled', 'This site is not enrolled in Net Cart.', array( 'status' => 403 ) );
         }
 
-        $result = $validation['results'][0] ?? null;
-        if ( $result && ! $result['in_stock'] ) {
-            return new WP_Error( 'znc_out_of_stock', 'Product is out of stock on the origin shop.' );
+        // Check cart limits.
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $max_items = absint( $settings['max_items_per_cart'] ?? 100 );
+        $max_shops = absint( $settings['max_shops_per_cart'] ?? 10 );
+
+        $current_count = $this->store->get_item_count( $user_id );
+        $current_shops = $this->store->get_shop_count( $user_id );
+
+        if ( $current_count >= $max_items ) {
+            return new WP_Error( 'cart_full', 'Cart item limit reached.', array( 'status' => 400 ) );
         }
 
-        // Use live price from validation
-        if ( $result && isset( $result['current_price'] ) ) {
-            $data['unit_price'] = $result['current_price'];
+        // Check shop limit only if this is a new shop.
+        $existing_items = $this->store->get_cart( $user_id );
+        $existing_blogs = array_unique( array_column( $existing_items, 'blog_id' ) );
+        if ( ! in_array( $blog_id, $existing_blogs ) && $current_shops >= $max_shops ) {
+            return new WP_Error( 'shop_limit', 'Maximum shops per cart reached.', array( 'status' => 400 ) );
         }
 
-        $data['user_id'] = $user_id;
-        $line_id = $this->store->upsert_item( $data );
+        // Upsert the item.
+        $line_id = $this->store->upsert_item( $user_id, $params );
 
-        if ( ! $line_id ) {
-            return new WP_Error( 'znc_cart_full', 'Cart item limit reached.' );
-        }
-
-        return $this->store->get_cart( $user_id );
+        return $this->store->get_cart( $user_id, 'shop' );
     }
 
     /**
-     * Refresh the entire cart — re-validate all items against their origin subsites.
+     * Refresh the entire global cart by re-pulling snapshots from all enrolled subsites.
+     * This ensures the cart always shows the latest prices, stock, and items.
+     *
+     * v1.2.0 addition — the core of the cross-site aggregation fix.
      */
-    public function refresh_cart( int $user_id ) : array {
-        $by_site = $this->store->get_cart_by_site( $user_id );
-        $removed = array();
-        $updated = array();
+    public function refresh_all( $user_id ) {
+        $enrolled = ZNC_Network_Admin::get_enrolled_sites();
 
-        foreach ( $by_site as $site_id => $items ) {
-            $products = array();
-            foreach ( $items as $item ) {
-                $products[] = array(
-                    'product_id'     => $item['product_id'],
-                    'variation_id'   => $item['variation_id'],
-                    'quantity'       => $item['quantity'],
-                    'expected_price' => $item['unit_price'],
-                );
+        foreach ( $enrolled as $site ) {
+            $blog_id = $site['blog_id'];
+
+            switch_to_blog( $blog_id );
+
+            if ( ! class_exists( 'WooCommerce' ) || ! function_exists( 'WC' ) ) {
+                restore_current_blog();
+                continue;
             }
 
-            $validation = ZNC_REST_Auth::remote_request( intval( $site_id ), '/pricing/validate', array(
-                'products' => $products,
+            // Build the snapshot for this user on this subsite.
+            $snapshot = new ZNC_Cart_Snapshot();
+            $snap_data = $snapshot->build( $user_id );
+
+            restore_current_blog();
+
+            // Now on main site — sync the snapshot into the global cart table.
+            global $wpdb;
+            $table = $wpdb->prefix . 'znc_global_cart';
+
+            // Clear old items from this subsite for this user.
+            $wpdb->delete( $table, array(
+                'user_id' => $user_id,
+                'blog_id' => $blog_id,
             ) );
 
-            if ( is_wp_error( $validation ) ) {
-                continue; // Keep items if subsite is unreachable
-            }
-
-            foreach ( $validation['results'] ?? array() as $idx => $result ) {
-                $item = $items[ $idx ] ?? null;
-                if ( ! $item ) continue;
-
-                if ( ! $result['valid'] ) {
-                    if ( $result['reason'] === 'not_found' || ! $result['in_stock'] ) {
-                        $this->store->delete_item( $item['id'] );
-                        $removed[] = $item;
-                    } elseif ( $result['price_changed'] ) {
-                        // Update to current price
-                        global $wpdb;
-                        $wpdb->update(
-                            $wpdb->prefix . 'znc_global_cart',
-                            array( 'unit_price' => $result['current_price'] ),
-                            array( 'id' => $item['id'] )
-                        );
-                        $updated[] = array_merge( $item, array( 'new_price' => $result['current_price'] ) );
-                    }
-                }
+            // Insert fresh items.
+            foreach ( $snap_data['items'] as $item ) {
+                $wpdb->insert( $table, array(
+                    'user_id'        => $user_id,
+                    'blog_id'        => $blog_id,
+                    'product_id'     => $item['product_id'],
+                    'variation_id'   => $item['variation_id'] ?? 0,
+                    'quantity'       => $item['quantity'],
+                    'product_name'   => $item['product_name'],
+                    'price'          => $item['price'],
+                    'line_total'     => $item['line_total'],
+                    'currency'       => $snap_data['currency'],
+                    'sku'            => $item['sku'] ?? '',
+                    'image_url'      => $item['image_url'] ?? '',
+                    'permalink'      => $item['permalink'] ?? '',
+                    'in_stock'       => $item['in_stock'] ? 1 : 0,
+                    'stock_qty'      => $item['stock_qty'],
+                    'variation_data' => maybe_serialize( $item['variation'] ?? array() ),
+                    'meta_data'      => maybe_serialize( $item['meta'] ?? array() ),
+                    'shop_name'      => $snap_data['shop']['name'] ?? '',
+                    'shop_url'       => $snap_data['shop']['url'] ?? '',
+                    'created_at'     => current_time( 'mysql' ),
+                    'updated_at'     => current_time( 'mysql' ),
+                ) );
             }
         }
 
-        return array(
-            'cart'    => $this->store->get_cart( $user_id ),
-            'removed' => $removed,
-            'updated' => $updated,
-        );
+        do_action( 'znc_global_cart_refreshed', $user_id );
+
+        return true;
     }
 
     /**
-     * Get full cart with parallel totals.
+     * Validate all items in the global cart against their origin subsites.
+     * Used by the checkout orchestrator before processing.
      */
-    public function get_cart_with_totals( int $user_id ) : array {
-        $items  = $this->store->get_cart( $user_id );
-        $totals = $this->currency->parallel_totals( $items );
+    public function validate_all( $user_id ) {
+        $shops   = $this->store->get_cart( $user_id, 'shop' );
+        $issues  = array();
 
-        return array(
-            'items'  => $items,
-            'totals' => $totals,
-            'stats'  => $this->store->get_cart_stats( $user_id ),
-        );
-    }
+        foreach ( $shops as $shop ) {
+            $blog_id = $shop['blog_id'];
 
-    private function is_site_enrolled( int $site_id ) : bool {
-        global $wpdb;
-        $table = $wpdb->prefix . 'znc_enrolled_sites';
-        return (bool) $wpdb->get_var( $wpdb->prepare(
-            "SELECT COUNT(*) FROM {$table} WHERE site_id = %d AND status = 'active'",
-            $site_id
-        ) );
+            switch_to_blog( $blog_id );
+
+            foreach ( $shop['items'] as $item ) {
+                $product = function_exists( 'wc_get_product' )
+                    ? wc_get_product( $item['variation_id'] ?: $item['product_id'] )
+                    : null;
+
+                if ( ! $product ) {
+                    $issues[] = array(
+                        'blog_id'    => $blog_id,
+                        'product_id' => $item['product_id'],
+                        'issue'      => 'not_found',
+                        'message'    => $item['product_name'] . ' is no longer available.',
+                    );
+                    continue;
+                }
+
+                // Price check.
+                $current_price = (float) $product->get_price();
+                if ( abs( $current_price - $item['price'] ) > 0.01 ) {
+                    $issues[] = array(
+                        'blog_id'       => $blog_id,
+                        'product_id'    => $item['product_id'],
+                        'issue'         => 'price_changed',
+                        'old_price'     => $item['price'],
+                        'current_price' => $current_price,
+                        'message'       => sprintf(
+                            '%s price changed from %s to %s.',
+                            $item['product_name'],
+                            $item['price'],
+                            $current_price
+                        ),
+                    );
+                }
+
+                // Stock check.
+                if ( ! $product->is_in_stock() ) {
+                    $issues[] = array(
+                        'blog_id'    => $blog_id,
+                        'product_id' => $item['product_id'],
+                        'issue'      => 'out_of_stock',
+                        'message'    => $item['product_name'] . ' is out of stock.',
+                    );
+                } elseif ( $product->managing_stock() && $product->get_stock_quantity() < $item['quantity'] ) {
+                    $issues[] = array(
+                        'blog_id'    => $blog_id,
+                        'product_id' => $item['product_id'],
+                        'issue'      => 'insufficient_stock',
+                        'available'  => $product->get_stock_quantity(),
+                        'requested'  => $item['quantity'],
+                        'message'    => sprintf(
+                            '%s: only %d available (requested %d).',
+                            $item['product_name'],
+                            $product->get_stock_quantity(),
+                            $item['quantity']
+                        ),
+                    );
+                }
+            }
+
+            restore_current_blog();
+        }
+
+        return $issues;
     }
 }

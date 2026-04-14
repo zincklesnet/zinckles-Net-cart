@@ -1,191 +1,175 @@
 <?php
+/**
+ * Order Factory — creates parent + child orders with mapping table.
+ *
+ * @package ZincklesNetCart
+ * @since   1.0.0
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Order_Factory {
 
     public function init() {
-        add_action( 'woocommerce_order_status_changed', array( $this, 'sync_child_status' ), 10, 3 );
+        // No hooks — invoked by checkout orchestrator.
     }
 
     /**
      * Create the parent order on the main site.
      */
-    public function create_parent_order( int $user_id, array $cart_items, array $params = array() ) {
-        if ( ! class_exists( 'WC_Order' ) ) {
-            return new WP_Error( 'znc_wc_missing', 'WooCommerce not active on main site.' );
+    public function create_parent_order( $user_id, $shops, $checkout_data ) {
+        if ( ! function_exists( 'wc_create_order' ) ) {
+            return new WP_Error( 'wc_missing', 'WooCommerce is required on the main site.' );
         }
 
-        $main_settings = get_option( 'znc_main_settings', array() );
-        $prefix        = $main_settings['order_prefix_parent'] ?? 'ZNC';
+        $order = wc_create_order( array(
+            'customer_id' => $user_id,
+            'status'      => 'processing',
+        ) );
 
-        try {
-            $order = wc_create_order( array(
-                'customer_id' => $user_id,
-                'status'      => $main_settings['default_parent_status'] ?? 'processing',
-            ) );
+        if ( is_wp_error( $order ) ) {
+            return $order;
+        }
 
-            if ( is_wp_error( $order ) ) {
-                return $order;
+        // Add line items from all shops.
+        foreach ( $shops as $shop ) {
+            foreach ( $shop['items'] as $item ) {
+                $order->add_item( new WC_Order_Item_Product( array(
+                    'name'     => sprintf( '[%s] %s', $shop['shop_name'], $item['product_name'] ),
+                    'quantity' => $item['quantity'],
+                    'subtotal' => $item['line_total'],
+                    'total'    => $item['line_total'],
+                ) ) );
             }
+        }
 
-            // Add line items grouped by origin site
-            foreach ( $cart_items as $item ) {
-                $line = new WC_Order_Item_Product();
-                $line->set_name( sprintf( '[Site %d] Product #%d', $item['site_id'], $item['product_id'] ) );
-                $line->set_quantity( $item['quantity'] );
-                $line->set_subtotal( $item['unit_price'] * $item['quantity'] );
-                $line->set_total( $item['unit_price'] * $item['quantity'] );
+        // Set order meta.
+        $order->update_meta_data( '_znc_order_type', 'parent' );
+        $order->update_meta_data( '_znc_totals', $checkout_data['totals'] ?? array() );
+        $order->update_meta_data( '_znc_zcred_deductions', $checkout_data['zcred_deductions'] ?? array() );
+        $order->update_meta_data( '_znc_mycred_results', $checkout_data['mycred_results'] ?? array() );
+        $order->update_meta_data( '_znc_monetary_total', $checkout_data['monetary_total'] ?? 0 );
+        $order->update_meta_data( '_znc_shop_count', count( $shops ) );
 
-                // Store origin metadata
-                $line->add_meta_data( '_znc_origin_site_id', $item['site_id'] );
-                $line->add_meta_data( '_znc_origin_product_id', $item['product_id'] );
-                $line->add_meta_data( '_znc_origin_variation_id', $item['variation_id'] ?? 0 );
-                $line->add_meta_data( '_znc_origin_currency', $item['currency'] ?? '' );
-                $line->add_meta_data( '_znc_origin_price', $item['unit_price'] );
+        if ( ! empty( $checkout_data['payment_method'] ) ) {
+            $order->set_payment_method( $checkout_data['payment_method'] );
+        }
 
-                $order->add_item( $line );
-            }
+        $order->set_currency( $checkout_data['totals']['base_currency'] ?? 'CAD' );
+        $order->set_total( $checkout_data['monetary_total'] ?? 0 );
 
-            // Set order metadata
-            $order->set_currency( $params['currency'] ?? 'USD' );
-            $order->set_total( $params['total'] ?? 0 );
-
-            if ( ! empty( $params['payment_method'] ) ) {
-                $order->set_payment_method( $params['payment_method'] );
-            }
-
-            // Billing and shipping
-            if ( ! empty( $params['billing'] ) ) {
-                foreach ( $params['billing'] as $key => $value ) {
-                    $setter = "set_billing_{$key}";
-                    if ( method_exists( $order, $setter ) ) {
-                        $order->$setter( $value );
-                    }
+        // Billing/shipping.
+        if ( ! empty( $checkout_data['billing'] ) ) {
+            foreach ( $checkout_data['billing'] as $key => $val ) {
+                $setter = 'set_billing_' . $key;
+                if ( method_exists( $order, $setter ) ) {
+                    $order->$setter( $val );
                 }
             }
-            if ( ! empty( $params['shipping'] ) ) {
-                foreach ( $params['shipping'] as $key => $value ) {
-                    $setter = "set_shipping_{$key}";
-                    if ( method_exists( $order, $setter ) ) {
-                        $order->$setter( $value );
-                    }
-                }
-            }
-
-            // Net Cart metadata
-            $order->update_meta_data( '_znc_parent_order', true );
-            $order->update_meta_data( '_znc_zcred_deducted', $params['zcred_deducted'] ?? 0 );
-            $order->update_meta_data( '_znc_zcred_value', $params['zcred_value'] ?? 0 );
-            $order->update_meta_data( '_znc_totals', $params['totals'] ?? array() );
-            $order->update_meta_data( '_znc_sites_involved', array_unique( array_column( $cart_items, 'site_id' ) ) );
-
-            $order->add_order_note( sprintf(
-                'Net Cart parent order — %d items from %d shops. ZCreds: %s',
-                count( $cart_items ),
-                count( array_unique( array_column( $cart_items, 'site_id' ) ) ),
-                $params['zcred_deducted'] ?? 0
-            ) );
-
-            $order->save();
-
-            return array(
-                'order_id' => $order->get_id(),
-                'status'   => $order->get_status(),
-                'total'    => $order->get_total(),
-                'currency' => $order->get_currency(),
-            );
-
-        } catch ( Exception $e ) {
-            return new WP_Error( 'znc_order_failed', $e->getMessage() );
-        }
-    }
-
-    /**
-     * Create a child order on a subsite via REST.
-     */
-    public function create_child_order( int $site_id, int $user_id, array $items, int $parent_order_id ) {
-        $payload = array(
-            'customer_id'     => $user_id,
-            'parent_order_id' => $parent_order_id,
-            'parent_site_id'  => get_current_blog_id(),
-            'currency'        => $items[0]['currency'] ?? 'USD',
-            'items'           => array_map( function( $item ) {
-                return array(
-                    'product_id'   => $item['product_id'],
-                    'variation_id' => $item['variation_id'] ?? 0,
-                    'quantity'     => $item['quantity'],
-                    'line_total'   => $item['unit_price'] * $item['quantity'],
-                );
-            }, $items ),
-        );
-
-        $result = ZNC_REST_Auth::remote_request( $site_id, '/orders/create-child', $payload );
-
-        if ( is_wp_error( $result ) ) {
-            return $result;
         }
 
-        // Record mapping
-        $this->record_mapping( $parent_order_id, $result['child_order_id'], $site_id );
+        $order->add_order_note( sprintf(
+            'Net Cart parent order — %d shops, %s currency mode.',
+            count( $shops ),
+            ( $checkout_data['totals']['is_mixed'] ?? false ) ? 'mixed' : 'single'
+        ) );
+
+        $order->save();
 
         return array(
-            'site_id'        => $site_id,
-            'child_order_id' => $result['child_order_id'],
-            'parent_order_id'=> $parent_order_id,
+            'order_id' => $order->get_id(),
+            'total'    => $order->get_total(),
+            'status'   => $order->get_status(),
         );
     }
 
     /**
-     * Record parent→child order mapping.
+     * Create child orders on each subsite via switch_to_blog.
      */
-    private function record_mapping( int $parent_id, int $child_id, int $site_id ) {
+    public function create_child_orders( $parent_order_id, $user_id, $shops ) {
+        $results = array();
+
         global $wpdb;
-        $wpdb->insert( $wpdb->prefix . 'znc_order_map', array(
-            'parent_order_id' => $parent_id,
-            'child_order_id'  => $child_id,
-            'child_site_id'   => $site_id,
-            'status'          => 'processing',
-        ) );
-    }
+        $map_table = $wpdb->prefix . 'znc_order_map';
 
-    /**
-     * Get all child orders for a parent.
-     */
-    public function get_children( int $parent_order_id ) : array {
-        global $wpdb;
-        return $wpdb->get_results( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}znc_order_map WHERE parent_order_id = %d",
-            $parent_order_id
-        ), ARRAY_A ) ?: array();
-    }
+        foreach ( $shops as $shop ) {
+            $blog_id = $shop['blog_id'];
 
-    /**
-     * Sync parent order status changes to child orders.
-     */
-    public function sync_child_status( $order_id, $old_status, $new_status ) {
-        $order = wc_get_order( $order_id );
-        if ( ! $order || ! $order->get_meta( '_znc_parent_order' ) ) {
-            return;
-        }
+            switch_to_blog( $blog_id );
 
-        $main_settings = get_option( 'znc_main_settings', array() );
-        if ( empty( $main_settings['sync_child_status'] ) ) {
-            return;
-        }
+            if ( ! function_exists( 'wc_create_order' ) ) {
+                restore_current_blog();
+                $results[] = array(
+                    'blog_id' => $blog_id,
+                    'success' => false,
+                    'error'   => 'WooCommerce not active.',
+                );
+                continue;
+            }
 
-        $children = $this->get_children( $order_id );
-        foreach ( $children as $child ) {
-            ZNC_REST_Auth::remote_request( intval( $child['child_site_id'] ), '/orders/update-status', array(
-                'order_id'   => $child['child_order_id'],
-                'new_status' => $new_status,
+            $child_order = wc_create_order( array(
+                'customer_id' => $user_id,
+                'status'      => 'processing',
             ) );
 
-            global $wpdb;
-            $wpdb->update(
-                $wpdb->prefix . 'znc_order_map',
-                array( 'status' => $new_status ),
-                array( 'id' => $child['id'] )
+            if ( is_wp_error( $child_order ) ) {
+                restore_current_blog();
+                $results[] = array(
+                    'blog_id' => $blog_id,
+                    'success' => false,
+                    'error'   => $child_order->get_error_message(),
+                );
+                continue;
+            }
+
+            $subtotal = 0;
+            foreach ( $shop['items'] as $item ) {
+                $product = wc_get_product( $item['variation_id'] ?: $item['product_id'] );
+                if ( $product ) {
+                    $child_order->add_product( $product, $item['quantity'], array(
+                        'subtotal' => $item['line_total'],
+                        'total'    => $item['line_total'],
+                    ) );
+                }
+                $subtotal += $item['line_total'];
+            }
+
+            $child_order->set_currency( $shop['currency'] );
+            $child_order->calculate_totals();
+            $child_order->update_meta_data( '_znc_order_type', 'child' );
+            $child_order->update_meta_data( '_znc_parent_order_id', $parent_order_id );
+            $child_order->update_meta_data( '_znc_parent_site_id', get_main_site_id() );
+            $child_order->add_order_note( sprintf(
+                'Net Cart child order — parent #%d on main site.',
+                $parent_order_id
+            ) );
+            $child_order->save();
+
+            $child_id = $child_order->get_id();
+
+            restore_current_blog();
+
+            // Record in order map on main site.
+            $wpdb->insert( $map_table, array(
+                'parent_order_id' => $parent_order_id,
+                'child_order_id'  => $child_id,
+                'child_blog_id'   => $blog_id,
+                'currency'        => $shop['currency'],
+                'subtotal'        => $subtotal,
+                'status'          => 'processing',
+                'created_at'      => current_time( 'mysql' ),
+            ) );
+
+            $results[] = array(
+                'blog_id'        => $blog_id,
+                'shop_name'      => $shop['shop_name'],
+                'child_order_id' => $child_id,
+                'currency'       => $shop['currency'],
+                'subtotal'       => $subtotal,
+                'success'        => true,
             );
         }
+
+        return $results;
     }
 }

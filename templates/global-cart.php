@@ -1,137 +1,240 @@
 <?php
+/**
+ * Global Cart Template — [znc_global_cart] shortcode
+ *
+ * v1.2.0: Shows ALL products from ALL enrolled subsites in one unified cart,
+ * grouped by shop with currency badges and per-shop subtotals.
+ *
+ * @package ZincklesNetCart
+ */
+
 defined( 'ABSPATH' ) || exit;
+
+if ( ! is_user_logged_in() ) {
+    echo '<div class="znc-notice znc-notice-info">';
+    echo '<p>' . __( 'Please log in to view your Net Cart.', 'znc' ) . '</p>';
+    echo '<a href="' . esc_url( wp_login_url( get_permalink() ) ) . '" class="button">' . __( 'Log In', 'znc' ) . '</a>';
+    echo '</div>';
+    return;
+}
+
 $user_id = get_current_user_id();
 $store   = new ZNC_Global_Cart_Store();
-$currency = new ZNC_Currency_Handler();
-$merger  = new ZNC_Global_Cart_Merger( $store, $currency );
-$mycred  = new ZNC_MyCred_Engine();
-$cart    = $merger->get_cart_with_totals( $user_id );
-$items   = $cart['items'];
-$totals  = $cart['totals'];
-$stats   = $cart['stats'];
-$settings = get_option( 'znc_main_settings', array() );
-$layout  = $settings['layout_style'] ?? 'grouped';
-$by_site = array();
-foreach ( $items as $item ) {
-    $by_site[ $item['site_id'] ][] = $item;
+
+// Get cart grouped by shop — this pulls items from ALL subsites.
+$shops   = $store->get_cart( $user_id, 'shop' );
+$summary = $store->get_cart_summary( $user_id );
+
+$total_items      = (int) ( $summary['total_items'] ?? 0 );
+$total_shops      = (int) ( $summary['total_shops'] ?? 0 );
+$total_currencies = (int) ( $summary['total_currencies'] ?? 0 );
+$currency_totals  = (array) ( $summary['currency_totals'] ?? array() );
+
+// Network settings for checkout URL.
+$settings     = get_site_option( 'znc_network_settings', array() );
+$checkout_url = get_permalink( get_option( 'znc_checkout_page_id' ) );
+if ( ! $checkout_url ) {
+    // Fallback: look for page with [znc_checkout] shortcode.
+    $pages = get_pages();
+    foreach ( $pages as $page ) {
+        if ( has_shortcode( $page->post_content, 'znc_checkout' ) ) {
+            $checkout_url = get_permalink( $page->ID );
+            break;
+        }
+    }
 }
 ?>
-<div class="znc-global-cart" data-layout="<?php echo esc_attr( $layout ); ?>">
-    <?php if ( empty( $items ) ) : ?>
-        <div class="znc-empty-cart">
-            <div class="znc-empty-icon">&#128722;</div>
-            <p><?php echo esc_html( $settings['empty_cart_message'] ?? 'Your Net Cart is empty. Browse our shops to find something you love!' ); ?></p>
-        </div>
-    <?php else : ?>
-        <div class="znc-cart-header">
-            <h2><?php printf( esc_html__( 'Your Net Cart (%d items from %d shops)', 'zinckles-net-cart' ), $stats['item_count'], $stats['shop_count'] ); ?></h2>
-        </div>
 
-        <?php if ( 'tabbed' === $layout ) : ?>
-        <div class="znc-tabs">
-            <?php foreach ( $by_site as $site_id => $site_items ) :
-                $display = apply_filters( 'znc_shop_display', array(), $site_id );
-            ?>
-            <button class="znc-tab" data-site="<?php echo esc_attr( $site_id ); ?>">
-                <span class="znc-badge-dot" style="background:<?php echo esc_attr( $display['badge_color'] ?? '#4f46e5' ); ?>"></span>
-                <?php echo esc_html( $display['name'] ?? 'Shop #' . $site_id ); ?>
-                <span class="znc-tab-count">(<?php echo count( $site_items ); ?>)</span>
-            </button>
-            <?php endforeach; ?>
-        </div>
-        <?php endif; ?>
+<div class="znc-global-cart" data-user-id="<?php echo $user_id; ?>">
 
-        <?php foreach ( $by_site as $site_id => $site_items ) :
-            $display = apply_filters( 'znc_shop_display', array(), $site_id );
-        ?>
-        <div class="znc-shop-group" data-site="<?php echo esc_attr( $site_id ); ?>">
-            <?php if ( 'flat' !== $layout ) : ?>
-            <div class="znc-shop-header">
-                <?php if ( ! empty( $display['icon_url'] ) ) : ?>
-                    <img src="<?php echo esc_url( $display['icon_url'] ); ?>" class="znc-shop-icon" alt="" />
-                <?php endif; ?>
-                <span class="znc-shop-badge" style="background:<?php echo esc_attr( $display['badge_color'] ?? '#4f46e5' ); ?>">
-                    <?php echo esc_html( $display['name'] ?? 'Shop #' . $site_id ); ?>
+    <!-- ── Cart Header ────────────────────────────────────── -->
+    <div class="znc-cart-header">
+        <h2 class="znc-cart-title">
+            <?php _e( '🛒 Your Net Cart', 'znc' ); ?>
+        </h2>
+
+        <?php if ( $total_items > 0 ) : ?>
+            <div class="znc-cart-stats">
+                <span class="znc-stat">
+                    <strong><?php echo $total_items; ?></strong> <?php _e( 'items', 'znc' ); ?>
                 </span>
-                <?php if ( ! empty( $settings['show_origin_links'] ) ) : ?>
-                    <a href="<?php echo esc_url( $display['site_url'] ?? '#' ); ?>" class="znc-shop-link" target="_blank">&#8599; Visit Shop</a>
+                <span class="znc-stat">
+                    <strong><?php echo $total_shops; ?></strong> <?php _e( 'shops', 'znc' ); ?>
+                </span>
+                <?php if ( $total_currencies > 1 ) : ?>
+                    <span class="znc-stat znc-mixed-badge">
+                        <?php _e( '🌐 Mixed Currency', 'znc' ); ?>
+                    </span>
                 <?php endif; ?>
             </div>
-            <?php endif; ?>
+        <?php endif; ?>
+    </div>
 
-            <table class="znc-cart-table">
-                <thead><tr><th></th><th><?php esc_html_e( 'Product', 'zinckles-net-cart' ); ?></th><th><?php esc_html_e( 'Price', 'zinckles-net-cart' ); ?></th><th><?php esc_html_e( 'Qty', 'zinckles-net-cart' ); ?></th><th><?php esc_html_e( 'Total', 'zinckles-net-cart' ); ?></th><th></th></tr></thead>
-                <tbody>
-                <?php foreach ( $site_items as $item ) :
-                    $meta = json_decode( $item['line_meta'] ?? '{}', true );
-                    $line_total = floatval( $item['unit_price'] ) * intval( $item['quantity'] );
-                ?>
-                <tr class="znc-cart-item" data-line="<?php echo esc_attr( $item['id'] ); ?>">
-                    <td class="znc-item-image">
-                        <?php if ( ! empty( $meta['image_url'] ) ) : ?>
-                            <img src="<?php echo esc_url( $meta['image_url'] ); ?>" alt="" />
-                        <?php else : ?>
-                            <div class="znc-placeholder-img">&#128230;</div>
-                        <?php endif; ?>
-                    </td>
-                    <td class="znc-item-name">
-                        <?php echo esc_html( $meta['name'] ?? 'Product #' . $item['product_id'] ); ?>
-                        <?php if ( 'flat' === $layout && ! empty( $settings['show_shop_badges'] ) ) : ?>
-                            <span class="znc-inline-badge" style="background:<?php echo esc_attr( $display['badge_color'] ?? '#4f46e5' ); ?>"><?php echo esc_html( $display['name'] ?? '' ); ?></span>
-                        <?php endif; ?>
-                    </td>
-                    <td class="znc-item-price">
-                        <?php echo esc_html( $currency->format_price( floatval( $item['unit_price'] ), $item['currency'] ) ); ?>
-                        <?php if ( $item['currency'] !== $currency->get_base_currency() && ! empty( $settings['conversion_display'] ) && $settings['conversion_display'] !== 'original' ) : ?>
-                            <br /><small class="znc-converted"><?php echo esc_html( $currency->format_price( $currency->convert( floatval( $item['unit_price'] ), $item['currency'], $currency->get_base_currency() ), $currency->get_base_currency() ) ); ?></small>
-                        <?php endif; ?>
-                    </td>
-                    <td class="znc-item-qty">
-                        <input type="number" value="<?php echo esc_attr( $item['quantity'] ); ?>" min="1" max="99" class="znc-qty-input" data-line="<?php echo esc_attr( $item['id'] ); ?>" />
-                    </td>
-                    <td class="znc-item-total"><?php echo esc_html( $currency->format_price( $line_total, $item['currency'] ) ); ?></td>
-                    <td class="znc-item-remove">
-                        <button class="znc-remove-btn" data-line="<?php echo esc_attr( $item['id'] ); ?>" title="Remove">&times;</button>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
+    <?php if ( empty( $shops ) ) : ?>
+        <!-- ── Empty Cart ─────────────────────────────────────── -->
+        <div class="znc-empty-cart">
+            <div class="znc-empty-icon">🛒</div>
+            <h3><?php _e( 'Your Net Cart is empty', 'znc' ); ?></h3>
+            <p><?php _e( 'Products you add from any shop across the network will appear here.', 'znc' ); ?></p>
         </div>
+
+    <?php else : ?>
+        <!-- ── Cart Items Grouped by Shop ─────────────────────── -->
+        <?php foreach ( $shops as $shop ) : ?>
+            <div class="znc-shop-group" data-blog-id="<?php echo esc_attr( $shop['blog_id'] ); ?>">
+
+                <!-- Shop Header -->
+                <div class="znc-shop-header">
+                    <div class="znc-shop-badge" style="border-left-color: #7c3aed;">
+                        <span class="znc-shop-icon">🏪</span>
+                        <div class="znc-shop-info">
+                            <strong class="znc-shop-name">
+                                <?php echo esc_html( $shop['shop_name'] ?: __( 'Shop', 'znc' ) ); ?>
+                            </strong>
+                            <a href="<?php echo esc_url( $shop['shop_url'] ); ?>" target="_blank" class="znc-shop-url">
+                                <?php echo esc_html( $shop['shop_url'] ); ?>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="znc-shop-meta">
+                        <span class="znc-currency-chip"><?php echo esc_html( $shop['currency'] ); ?></span>
+                        <span class="znc-item-count">
+                            <?php echo count( $shop['items'] ); ?> <?php _e( 'items', 'znc' ); ?>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Items Table -->
+                <table class="znc-items-table">
+                    <thead>
+                        <tr>
+                            <th class="znc-col-image"></th>
+                            <th class="znc-col-product"><?php _e( 'Product', 'znc' ); ?></th>
+                            <th class="znc-col-price"><?php _e( 'Price', 'znc' ); ?></th>
+                            <th class="znc-col-qty"><?php _e( 'Qty', 'znc' ); ?></th>
+                            <th class="znc-col-total"><?php _e( 'Total', 'znc' ); ?></th>
+                            <th class="znc-col-stock"><?php _e( 'Stock', 'znc' ); ?></th>
+                            <th class="znc-col-actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ( $shop['items'] as $item ) :
+                            $variation = maybe_unserialize( $item['variation_data'] );
+                        ?>
+                            <tr class="znc-cart-item <?php echo ! $item['in_stock'] ? 'znc-out-of-stock' : ''; ?>"
+                                data-line-id="<?php echo esc_attr( $item['id'] ); ?>">
+
+                                <td class="znc-col-image">
+                                    <?php if ( $item['image_url'] ) : ?>
+                                        <img src="<?php echo esc_url( $item['image_url'] ); ?>"
+                                             alt="<?php echo esc_attr( $item['product_name'] ); ?>"
+                                             class="znc-product-thumb" width="60" height="60">
+                                    <?php else : ?>
+                                        <div class="znc-no-image">📦</div>
+                                    <?php endif; ?>
+                                </td>
+
+                                <td class="znc-col-product">
+                                    <a href="<?php echo esc_url( $item['permalink'] ); ?>" target="_blank">
+                                        <?php echo esc_html( $item['product_name'] ); ?>
+                                    </a>
+                                    <?php if ( $item['sku'] ) : ?>
+                                        <br><small class="znc-sku">SKU: <?php echo esc_html( $item['sku'] ); ?></small>
+                                    <?php endif; ?>
+                                    <?php if ( ! empty( $variation ) && is_array( $variation ) ) : ?>
+                                        <div class="znc-variation-info">
+                                            <?php foreach ( $variation as $attr => $val ) : ?>
+                                                <span class="znc-variation-attr">
+                                                    <?php echo esc_html( ucfirst( str_replace( 'attribute_pa_', '', $attr ) ) ); ?>:
+                                                    <?php echo esc_html( $val ); ?>
+                                                </span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </td>
+
+                                <td class="znc-col-price">
+                                    <?php echo esc_html( $item['currency'] ); ?> <?php echo number_format( $item['price'], 2 ); ?>
+                                </td>
+
+                                <td class="znc-col-qty">
+                                    <?php echo (int) $item['quantity']; ?>
+                                </td>
+
+                                <td class="znc-col-total">
+                                    <strong><?php echo esc_html( $item['currency'] ); ?> <?php echo number_format( $item['line_total'], 2 ); ?></strong>
+                                </td>
+
+                                <td class="znc-col-stock">
+                                    <?php if ( $item['in_stock'] ) : ?>
+                                        <span class="znc-stock-ok" title="In stock">✅</span>
+                                        <?php if ( $item['stock_qty'] !== null ) : ?>
+                                            <small>(<?php echo (int) $item['stock_qty']; ?>)</small>
+                                        <?php endif; ?>
+                                    <?php else : ?>
+                                        <span class="znc-stock-out" title="Out of stock">❌</span>
+                                    <?php endif; ?>
+                                </td>
+
+                                <td class="znc-col-actions">
+                                    <button type="button" class="znc-remove-item"
+                                            data-line-id="<?php echo esc_attr( $item['id'] ); ?>"
+                                            title="<?php _e( 'Remove', 'znc' ); ?>">
+                                        ✕
+                                    </button>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td colspan="4" class="znc-shop-subtotal-label">
+                                <?php _e( 'Shop Subtotal', 'znc' ); ?>
+                            </td>
+                            <td colspan="3" class="znc-shop-subtotal-value">
+                                <strong><?php echo esc_html( $shop['currency'] ); ?> <?php echo number_format( $shop['subtotal'], 2 ); ?></strong>
+                            </td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
         <?php endforeach; ?>
 
-        <!-- Totals -->
+        <!-- ── Cart Totals ────────────────────────────────────── -->
         <div class="znc-cart-totals">
-            <?php if ( $totals['is_mixed'] && ! empty( $settings['show_currency_breakdown'] ) ) : ?>
-            <div class="znc-currency-breakdown">
-                <h4><?php esc_html_e( 'Currency Breakdown', 'zinckles-net-cart' ); ?></h4>
-                <?php foreach ( $totals['breakdowns'] as $b ) : ?>
-                <div class="znc-breakdown-line">
-                    <span><?php echo esc_html( $b['currency'] ); ?></span>
-                    <span><?php echo esc_html( $currency->format_price( $b['subtotal'], $b['currency'] ) ); ?></span>
-                    <span class="znc-converted">&rarr; <?php echo esc_html( $currency->format_price( $b['converted'], $b['base_currency'] ) ); ?></span>
+            <h3><?php _e( 'Cart Totals', 'znc' ); ?></h3>
+
+            <?php if ( $total_currencies > 1 ) : ?>
+                <div class="znc-currency-breakdown">
+                    <p class="znc-breakdown-label"><?php _e( 'Per-Currency Subtotals:', 'znc' ); ?></p>
+                    <?php foreach ( $currency_totals as $ct ) : ?>
+                        <div class="znc-currency-line">
+                            <span class="znc-currency-chip"><?php echo esc_html( $ct['currency'] ); ?></span>
+                            <strong><?php echo number_format( (float) $ct['subtotal'], 2 ); ?></strong>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
-                <?php endforeach; ?>
-            </div>
+            <?php else : ?>
+                <?php
+                $single_currency = ! empty( $currency_totals[0] ) ? $currency_totals[0] : null;
+                if ( $single_currency ) :
+                ?>
+                    <div class="znc-single-total">
+                        <span><?php _e( 'Subtotal:', 'znc' ); ?></span>
+                        <strong>
+                            <?php echo esc_html( $single_currency['currency'] ); ?>
+                            <?php echo number_format( (float) $single_currency['subtotal'], 2 ); ?>
+                        </strong>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
 
-            <div class="znc-total-line znc-total-grand">
-                <span><?php esc_html_e( 'Total', 'zinckles-net-cart' ); ?></span>
-                <span><?php echo esc_html( $currency->format_price( $totals['converted_total'], $totals['base_currency'] ) ); ?></span>
-            </div>
-
-            <?php if ( $mycred->is_available() && ! empty( $settings['show_zcred_widget'] ) ) :
-                $parallel = $mycred->get_parallel_total( $user_id, $totals['converted_total'] );
-            ?>
-            <div class="znc-zcred-widget">
-                <h4><?php echo esc_html( $parallel['label'] ); ?> Balance: <?php echo esc_html( number_format( $parallel['balance'], 0 ) ); ?></h4>
-                <p>Max applicable: <?php echo esc_html( $currency->format_price( $parallel['max_applicable'], $totals['base_currency'] ) ); ?> (<?php echo esc_html( $parallel['credits_needed'] ); ?> <?php echo esc_html( $parallel['label'] ); ?>)</p>
-            </div>
+            <?php if ( $checkout_url ) : ?>
+                <a href="<?php echo esc_url( $checkout_url ); ?>" class="znc-checkout-btn button alt">
+                    <?php _e( 'Proceed to Checkout →', 'znc' ); ?>
+                </a>
             <?php endif; ?>
-
-            <a href="<?php echo esc_url( get_permalink( $settings['checkout_page_id'] ?? 0 ) ); ?>" class="znc-checkout-btn button">
-                <?php esc_html_e( 'Proceed to Checkout', 'zinckles-net-cart' ); ?>
-            </a>
         </div>
+
     <?php endif; ?>
 </div>
