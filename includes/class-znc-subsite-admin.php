@@ -1,43 +1,124 @@
 <?php
+/**
+ * Subsite Admin — v1.4.0
+ * Admin notice and cart info page on enrolled subsites.
+ */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Subsite_Admin {
-    private $host;
-    public function __construct( ZNC_Checkout_Host $host ) { $this->host = $host; }
 
     public function init() {
+        if ( is_main_site() ) return;
         add_action( 'admin_menu', array( $this, 'add_menu' ) );
+        add_action( 'admin_notices', array( $this, 'enrollment_notice' ) );
     }
 
     public function add_menu() {
-        add_menu_page( 'Net Cart', 'Net Cart', 'manage_woocommerce', 'znc-subsite', array( $this, 'render' ), 'dashicons-cart', 56 );
+        add_submenu_page(
+            'woocommerce',
+            __( 'Net Cart Status', 'zinckles-net-cart' ),
+            __( 'Net Cart Status', 'zinckles-net-cart' ),
+            'manage_woocommerce',
+            'znc-subsite-status',
+            array( $this, 'render_page' )
+        );
     }
 
-    public function render() {
-        $host_info = $this->host->get_host_info();
-        $blog_id   = get_current_blog_id();
-        $enrolled  = $this->host->is_enrolled( $blog_id );
-        $currency  = function_exists( 'get_woocommerce_currency' ) ? get_woocommerce_currency() : 'N/A';
-        $products  = function_exists( 'wc_get_products' ) ? count( wc_get_products( array( 'limit' => -1, 'return' => 'ids', 'status' => 'publish' ) ) ) : 0;
-        $mycred_types = array();
-        if ( function_exists( 'mycred_get_types' ) ) { $mycred_types = mycred_get_types(); }
+    public function enrollment_notice() {
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $enrolled = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
+        $blog_id  = get_current_blog_id();
+
+        if ( ! in_array( $blog_id, $enrolled ) ) {
+            echo '<div class="notice notice-warning"><p>';
+            printf(
+                esc_html__( 'This site is not enrolled in Zinckles Net Cart. Products will not sync to the global cart. %sEnroll in Network Admin%s', 'zinckles-net-cart' ),
+                '<a href="' . esc_url( network_admin_url( 'admin.php?page=znc-network-subsites' ) ) . '">',
+                '</a>'
+            );
+            echo '</p></div>';
+        }
+    }
+
+    public function render_page() {
+        $settings   = get_site_option( 'znc_network_settings', array() );
+        $enrolled   = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
+        $blog_id    = get_current_blog_id();
+        $is_enrolled = in_array( $blog_id, $enrolled );
+        $host_id    = isset( $settings['checkout_host_id'] ) ? (int) $settings['checkout_host_id'] : get_main_site_id();
+        $host_url   = get_blog_option( $host_id, 'siteurl' );
         ?>
-        <div class="wrap">
-            <h1>Zinckles Net Cart</h1>
-            <div class="card" style="max-width:600px;padding:20px;">
-                <h2>Subsite Status</h2>
-                <table class="widefat">
-                    <tr><td>Enrollment</td><td><?php echo $enrolled ? '<span style="color:green;font-weight:bold;">✅ Enrolled</span>' : '<span style="color:#999;">Not Enrolled</span>'; ?></td></tr>
-                    <tr><td>Checkout Host</td><td><a href="<?php echo esc_url( $host_info['url'] ); ?>" target="_blank"><?php echo esc_html( $host_info['name'] ); ?></a></td></tr>
-                    <tr><td>Currency</td><td><?php echo esc_html( $currency ); ?></td></tr>
-                    <tr><td>Published Products</td><td><?php echo $products; ?></td></tr>
-                    <tr><td>WooCommerce</td><td><?php echo class_exists('WooCommerce') ? '<span style="color:green;">Active</span>' : '<span style="color:red;">Missing</span>'; ?></td></tr>
-                    <tr><td>MyCred Types</td><td><?php echo ! empty( $mycred_types ) ? esc_html( implode( ', ', $mycred_types ) ) : 'N/A'; ?></td></tr>
+        <div class="wrap znc-admin-wrap">
+            <h1><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Net Cart — Subsite Status', 'zinckles-net-cart' ); ?></h1>
+
+            <div class="znc-info-card">
+                <table class="widefat striped">
+                    <tr>
+                        <td><?php esc_html_e( 'Enrollment Status', 'zinckles-net-cart' ); ?></td>
+                        <td>
+                            <?php if ( $is_enrolled ) : ?>
+                                <span class="znc-badge znc-badge-success"><?php esc_html_e( 'Enrolled', 'zinckles-net-cart' ); ?></span>
+                            <?php else : ?>
+                                <span class="znc-badge znc-badge-warning"><?php esc_html_e( 'Not Enrolled', 'zinckles-net-cart' ); ?></span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'Blog ID', 'zinckles-net-cart' ); ?></td>
+                        <td><?php echo esc_html( $blog_id ); ?></td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'Checkout Host', 'zinckles-net-cart' ); ?></td>
+                        <td><a href="<?php echo esc_url( $host_url ); ?>" target="_blank"><?php echo esc_html( $host_url ); ?></a> (Blog ID <?php echo esc_html( $host_id ); ?>)</td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'WooCommerce', 'zinckles-net-cart' ); ?></td>
+                        <td>
+                            <?php if ( class_exists( 'WooCommerce' ) ) : ?>
+                                <span style="color:#46b450;">✓ Active (<?php echo esc_html( WC()->version ); ?>)</span>
+                            <?php else : ?>
+                                <span style="color:#dc3232;">✗ Not Active</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'MyCred', 'zinckles-net-cart' ); ?></td>
+                        <td>
+                            <?php if ( function_exists( 'mycred' ) ) : ?>
+                                <span style="color:#46b450;">✓ Active</span>
+                            <?php else : ?>
+                                <span style="color:#999;">— Not detected</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'GamiPress', 'zinckles-net-cart' ); ?></td>
+                        <td>
+                            <?php if ( function_exists( 'gamipress' ) || defined( 'GAMIPRESS_VER' ) ) : ?>
+                                <span style="color:#46b450;">✓ Active</span>
+                            <?php else : ?>
+                                <span style="color:#999;">— Not detected</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'Clear Local Cart', 'zinckles-net-cart' ); ?></td>
+                        <td><?php echo ! empty( $settings['clear_local_cart'] ) ? '✓ Enabled' : '✗ Disabled'; ?></td>
+                    </tr>
+                    <tr>
+                        <td><?php esc_html_e( 'Plugin Version', 'zinckles-net-cart' ); ?></td>
+                        <td><?php echo esc_html( ZNC_VERSION ); ?></td>
+                    </tr>
                 </table>
-                <?php if ( $enrolled ) : ?>
-                    <p style="margin-top:16px;"><a href="<?php echo esc_url( $this->host->get_cart_url() ); ?>" class="button button-primary">View Global Cart</a></p>
-                <?php endif; ?>
             </div>
+
+            <?php if ( $is_enrolled ) : ?>
+            <div class="znc-info-card">
+                <h2><?php esc_html_e( 'Shortcodes Available', 'zinckles-net-cart' ); ?></h2>
+                <p><?php esc_html_e( 'Use these shortcodes on this subsite:', 'zinckles-net-cart' ); ?></p>
+                <code>[znc_global_cart]</code> · <code>[znc_cart_count]</code> · <code>[znc_cart_total]</code> · <code>[znc_mini_cart]</code> · <code>[znc_cart_button]</code> · <code>[znc_points_balance]</code> · <code>[znc_shop_list]</code>
+            </div>
+            <?php endif; ?>
         </div>
         <?php
     }

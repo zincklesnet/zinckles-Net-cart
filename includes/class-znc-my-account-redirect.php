@@ -1,160 +1,118 @@
 <?php
 /**
- * My Account + Cart + Checkout Redirect — v1.3.2
- *
- * On enrolled subsites, redirects cart, checkout, and my-account pages
- * to the designated checkout host. URL filter methods return pre-resolved
- * cached values — zero switch_to_blog() calls.
- *
- * @package ZincklesNetCart
+ * My Account Redirect — v1.4.0
+ * Redirects My Account pages on enrolled subsites to the main checkout host site.
  */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_My_Account_Redirect {
 
-    /** @var ZNC_Checkout_Host */
-    private $host;
-
-    /** @var bool|null Cached enrollment status */
-    private $enrolled = null;
-
-    public function __construct( ZNC_Checkout_Host $host ) {
-        $this->host = $host;
-    }
+    private $host_url = '';
+    private $host_id  = 0;
 
     public function init() {
-        if ( $this->host->is_current_site_host() ) return;
-        if ( ! $this->is_enrolled() ) return;
+        if ( is_main_site() ) return;
 
-        add_action( 'template_redirect', array( $this, 'redirect_wc_pages' ), 5 );
+        $settings     = get_site_option( 'znc_network_settings', array() );
+        $this->host_id = isset( $settings['checkout_host_id'] ) ? (int) $settings['checkout_host_id'] : get_main_site_id();
+        $enrolled     = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
 
-        add_filter( 'woocommerce_get_myaccount_page_permalink', array( $this, 'filter_account_url' ) );
-        add_filter( 'woocommerce_get_cart_url',                 array( $this, 'filter_cart_url' ) );
-        add_filter( 'woocommerce_get_checkout_url',             array( $this, 'filter_checkout_url' ) );
+        if ( ! in_array( get_current_blog_id(), $enrolled ) ) return;
 
-        add_filter( 'wp_nav_menu_objects', array( $this, 'filter_nav_menu_items' ), 20, 2 );
+        // Cache host URL
+        $this->host_url = get_blog_option( $this->host_id, 'siteurl' );
+        if ( empty( $this->host_url ) ) return;
 
-        add_action( 'woocommerce_before_shop_loop',       array( $this, 'cart_notice' ) );
-        add_action( 'woocommerce_before_single_product',  array( $this, 'cart_notice' ) );
-        add_filter( 'wc_add_to_cart_message_html',        array( $this, 'filter_add_to_cart_message' ), 20, 2 );
+        // Override WC page URLs
+        add_filter( 'woocommerce_get_myaccount_page_permalink', array( $this, 'redirect_myaccount' ) );
+        add_filter( 'woocommerce_get_cart_url', array( $this, 'redirect_cart' ) );
+        add_filter( 'woocommerce_get_checkout_url', array( $this, 'redirect_checkout' ) );
 
-        add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_assets' ) );
+        // Override nav menu items
+        add_filter( 'wp_nav_menu_objects', array( $this, 'rewrite_nav_items' ), 20, 2 );
+
+        // Template redirect for direct access
+        add_action( 'template_redirect', array( $this, 'maybe_redirect' ) );
     }
 
-    /** Redirect WC pages to checkout host. */
-    public function redirect_wc_pages() {
-        if ( ! function_exists( 'is_account_page' ) ) return;
+    public function redirect_myaccount( $url ) {
+        $page_id = get_blog_option( $this->host_id, 'woocommerce_myaccount_page_id' );
+        if ( $page_id ) {
+            switch_to_blog( $this->host_id );
+            $url = get_permalink( $page_id );
+            restore_current_blog();
+        } else {
+            $url = trailingslashit( $this->host_url ) . 'my-account/';
+        }
+        return $url;
+    }
 
-        $redirect_url = '';
+    public function redirect_cart( $url ) {
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $page_id  = ! empty( $settings['cart_page_id'] ) ? (int) $settings['cart_page_id'] : 0;
 
-        if ( function_exists( 'is_account_page' ) && is_account_page() ) {
-            $redirect_url = $this->host->get_account_url();
-            global $wp;
-            if ( ! empty( $wp->query_vars ) ) {
-                foreach ( array( 'orders', 'view-order', 'edit-account', 'edit-address',
-                    'payment-methods', 'downloads', 'net-cart-orders' ) as $ep ) {
-                    if ( isset( $wp->query_vars[ $ep ] ) ) {
-                        $redirect_url = trailingslashit( $redirect_url ) . $ep . '/';
-                        $val = $wp->query_vars[ $ep ];
-                        if ( $val ) $redirect_url .= $val . '/';
-                        break;
-                    }
-                }
+        if ( $page_id ) {
+            switch_to_blog( $this->host_id );
+            $url = get_permalink( $page_id );
+            restore_current_blog();
+        } else {
+            $page_id = get_blog_option( $this->host_id, 'woocommerce_cart_page_id' );
+            if ( $page_id ) {
+                switch_to_blog( $this->host_id );
+                $url = get_permalink( $page_id );
+                restore_current_blog();
             }
-        } elseif ( function_exists( 'is_cart' ) && is_cart() ) {
-            $redirect_url = $this->host->get_cart_url();
-        } elseif ( function_exists( 'is_checkout' ) && is_checkout() && ! is_wc_endpoint_url( 'order-received' ) ) {
-            $redirect_url = $this->host->get_checkout_url();
         }
+        return $url;
+    }
 
-        if ( $redirect_url ) {
-            $redirect_url = add_query_arg( 'znc_from', get_current_blog_id(), $redirect_url );
-            wp_redirect( $redirect_url, 302 );
-            exit;
+    public function redirect_checkout( $url ) {
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $page_id  = ! empty( $settings['checkout_page_id'] ) ? (int) $settings['checkout_page_id'] : 0;
+
+        if ( $page_id ) {
+            switch_to_blog( $this->host_id );
+            $url = get_permalink( $page_id );
+            restore_current_blog();
+        } else {
+            $page_id = get_blog_option( $this->host_id, 'woocommerce_checkout_page_id' );
+            if ( $page_id ) {
+                switch_to_blog( $this->host_id );
+                $url = get_permalink( $page_id );
+                restore_current_blog();
+            }
         }
+        return $url;
     }
 
-    /* URL FILTERS — cached values, zero switch_to_blog */
-
-    public function filter_account_url( $url ) {
-        return $this->host->get_account_url();
-    }
-
-    public function filter_cart_url( $url ) {
-        return $this->host->get_cart_url();
-    }
-
-    public function filter_checkout_url( $url ) {
-        return $this->host->get_checkout_url();
-    }
-
-    /** Rewrite nav menu items linking to local WC pages. */
-    public function filter_nav_menu_items( $items, $args ) {
-        if ( ! function_exists( 'wc_get_page_id' ) ) return $items;
-
-        $map = array(
-            wc_get_page_id( 'myaccount' ) => $this->host->get_account_url(),
-            wc_get_page_id( 'cart' )      => $this->host->get_cart_url(),
-            wc_get_page_id( 'checkout' )  => $this->host->get_checkout_url(),
-        );
+    public function rewrite_nav_items( $items, $args ) {
+        $myaccount_id = (int) get_option( 'woocommerce_myaccount_page_id' );
+        $cart_id      = (int) get_option( 'woocommerce_cart_page_id' );
+        $checkout_id  = (int) get_option( 'woocommerce_checkout_page_id' );
 
         foreach ( $items as &$item ) {
-            if ( $item->object === 'page' && isset( $map[ (int) $item->object_id ] ) ) {
-                $item->url = $map[ (int) $item->object_id ];
+            $obj_id = (int) $item->object_id;
+            if ( $obj_id === $myaccount_id && $myaccount_id > 0 ) {
+                $item->url = $this->redirect_myaccount( $item->url );
+            } elseif ( $obj_id === $cart_id && $cart_id > 0 ) {
+                $item->url = $this->redirect_cart( $item->url );
+            } elseif ( $obj_id === $checkout_id && $checkout_id > 0 ) {
+                $item->url = $this->redirect_checkout( $item->url );
             }
         }
         return $items;
     }
 
-    /** Banner on shop pages. */
-    public function cart_notice() {
-        static $shown = false;
-        if ( $shown ) return;
-        $shown = true;
+    public function maybe_redirect() {
+        if ( ! function_exists( 'is_account_page' ) ) return;
 
-        $cart_url  = esc_url( $this->host->get_cart_url() );
-        $host_info = $this->host->get_host_info();
-        $host_name = esc_html( $host_info['name'] );
-
-        echo '<div class="znc-cart-redirect-notice">';
-        echo '<span class="znc-notice-icon">&#x1F6D2;</span> ';
-        printf(
-            __( 'Items you add go to your <a href="%s"><strong>Global Net Cart</strong></a> on %s.', 'zinckles-net-cart' ),
-            $cart_url, $host_name
-        );
-        echo '</div>';
-    }
-
-    /** Rewrite "View cart" link in add-to-cart message. */
-    public function filter_add_to_cart_message( $message, $products ) {
-        $cart_url = esc_url( $this->host->get_cart_url() );
-        return preg_replace(
-            '#<a[^>]*class="button wc-forward"[^>]*>[^<]*</a>#i',
-            '<a href="' . $cart_url . '" class="button wc-forward">'
-                . __( 'View Global Cart', 'zinckles-net-cart' ) . '</a>',
-            $message
-        );
-    }
-
-    /** Inline CSS for the notice banner. */
-    public function enqueue_assets() {
-        if ( ! function_exists( 'is_shop' ) ) return;
-        if ( is_shop() || is_product() || is_product_category() || is_product_tag() ) {
-            wp_add_inline_style( 'woocommerce-general', '
-                .znc-cart-redirect-notice{background:linear-gradient(135deg,#7c3aed15,#4f46e515);
-                    border:1px solid #7c3aed40;border-radius:8px;padding:12px 16px;margin-bottom:20px;
-                    font-size:14px;color:#1a1145;display:flex;align-items:center;gap:8px}
-                .znc-cart-redirect-notice a{color:#7c3aed;text-decoration:none}
-                .znc-cart-redirect-notice a:hover{text-decoration:underline}
-                .znc-notice-icon{font-size:18px}
-            ' );
+        // Redirect My Account page visits on subsites
+        if ( is_account_page() ) {
+            $url = $this->redirect_myaccount( '' );
+            if ( $url ) {
+                wp_redirect( $url, 302 );
+                exit;
+            }
         }
-    }
-
-    /** Check enrollment — cached per request. */
-    private function is_enrolled() {
-        if ( null !== $this->enrolled ) return $this->enrolled;
-        $this->enrolled = $this->host->is_enrolled( get_current_blog_id() );
-        return $this->enrolled;
     }
 }

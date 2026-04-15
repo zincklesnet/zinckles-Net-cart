@@ -1,43 +1,53 @@
 <?php
 /**
- * Network Admin — v1.3.2
+ * Network Admin — v1.4.0
  *
- * FIXES:
- * - init() ONLY runs in is_network_admin() context (called from main plugin)
- * - AJAX enrollment uses ZNC_Checkout_Host::enroll/remove (site_option based)
- * - No wp_znc_enrolled_sites table dependency
+ * CRITICAL FIX: AJAX handlers are registered via register_ajax_handlers()
+ * which is called from the main plugin on ALL admin/ajax requests.
+ * Menu pages are only added in network admin context via init_menus().
  *
- * @package ZincklesNetCart
+ * In v1.3.x, AJAX handlers were registered inside init() which only ran
+ * when is_network_admin() was true. But admin-ajax.php runs in a context
+ * where is_network_admin() returns FALSE — so ALL AJAX calls failed silently.
  */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Network_Admin {
 
-    public static function init() {
-        add_action( 'network_admin_menu', array( __CLASS__, 'add_menu' ) );
+    /**
+     * Register AJAX handlers — called on ALL admin/ajax requests.
+     * This is the v1.4.0 fix for enrollment/settings/security saves hanging.
+     */
+    public static function register_ajax_handlers() {
+        add_action( 'wp_ajax_znc_toggle_enrollment',      array( __CLASS__, 'ajax_toggle_enrollment' ) );
+        add_action( 'wp_ajax_znc_save_network_settings',  array( __CLASS__, 'ajax_save_settings' ) );
+        add_action( 'wp_ajax_znc_save_security',          array( __CLASS__, 'ajax_save_security' ) );
+        add_action( 'wp_ajax_znc_regenerate_secret',      array( __CLASS__, 'ajax_regenerate_secret' ) );
+        add_action( 'wp_ajax_znc_test_connection',        array( __CLASS__, 'ajax_test_connection' ) );
+        add_action( 'wp_ajax_znc_detect_point_types',     array( __CLASS__, 'ajax_detect_point_types' ) );
+    }
 
-        // AJAX handlers — network admin context
-        add_action( 'wp_ajax_znc_toggle_enrollment',    array( __CLASS__, 'ajax_toggle_enrollment' ) );
-        add_action( 'wp_ajax_znc_save_network_settings', array( __CLASS__, 'ajax_save_settings' ) );
-        add_action( 'wp_ajax_znc_save_security',        array( __CLASS__, 'ajax_save_security' ) );
-        add_action( 'wp_ajax_znc_regenerate_secret',    array( __CLASS__, 'ajax_regenerate_secret' ) );
-        add_action( 'wp_ajax_znc_test_connection',      array( __CLASS__, 'ajax_test_connection' ) );
+    /**
+     * Register menu pages — only called in network admin context.
+     */
+    public static function init_menus() {
+        add_action( 'network_admin_menu', array( __CLASS__, 'add_menu' ) );
     }
 
     public static function add_menu() {
         add_menu_page(
-            'Zinckles Net Cart',
-            'Net Cart',
-            'manage_network_options',
-            'znc-network',
-            array( __CLASS__, 'render_settings' ),
-            'dashicons-cart',
-            30
+            'Zinckles Net Cart', 'Net Cart', 'manage_network_options',
+            'znc-network', array( __CLASS__, 'render_settings' ),
+            'dashicons-cart', 30
         );
-        add_submenu_page( 'znc-network', 'Network Settings', 'Settings',    'manage_network_options', 'znc-network',     array( __CLASS__, 'render_settings' ) );
-        add_submenu_page( 'znc-network', 'Enrolled Subsites', 'Subsites',   'manage_network_options', 'znc-subsites',    array( __CLASS__, 'render_subsites' ) );
-        add_submenu_page( 'znc-network', 'Security',          'Security',   'manage_network_options', 'znc-security',    array( __CLASS__, 'render_security' ) );
-        add_submenu_page( 'znc-network', 'Diagnostics',       'Diagnostics','manage_network_options', 'znc-diagnostics', array( __CLASS__, 'render_diagnostics' ) );
+        add_submenu_page( 'znc-network', 'Network Settings', 'Settings',
+            'manage_network_options', 'znc-network', array( __CLASS__, 'render_settings' ) );
+        add_submenu_page( 'znc-network', 'Enrolled Subsites', 'Subsites',
+            'manage_network_options', 'znc-subsites', array( __CLASS__, 'render_subsites' ) );
+        add_submenu_page( 'znc-network', 'Security', 'Security',
+            'manage_network_options', 'znc-security', array( __CLASS__, 'render_security' ) );
+        add_submenu_page( 'znc-network', 'Diagnostics', 'Diagnostics',
+            'manage_network_options', 'znc-diagnostics', array( __CLASS__, 'render_diagnostics' ) );
     }
 
     /* ── Page Renderers ───────────────────────────────────────── */
@@ -58,6 +68,7 @@ class ZNC_Network_Admin {
     }
 
     public static function render_diagnostics() {
+        self::enqueue_admin_assets();
         include ZNC_PLUGIN_DIR . 'admin/views/network-diagnostics.php';
     }
 
@@ -65,7 +76,7 @@ class ZNC_Network_Admin {
         wp_enqueue_style( 'znc-admin', ZNC_PLUGIN_URL . 'assets/css/znc-admin.css', array(), ZNC_VERSION );
         wp_enqueue_script( 'znc-network-admin', ZNC_PLUGIN_URL . 'assets/js/znc-network-admin.js', array( 'jquery' ), ZNC_VERSION, true );
         wp_localize_script( 'znc-network-admin', 'zncAdmin', array(
-            'ajaxUrl' => network_admin_url( 'admin-ajax.php' ),
+            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( 'znc_network_admin' ),
         ) );
     }
@@ -74,7 +85,6 @@ class ZNC_Network_Admin {
 
     public static function ajax_toggle_enrollment() {
         check_ajax_referer( 'znc_network_admin', 'nonce' );
-
         if ( ! current_user_can( 'manage_network_options' ) ) {
             wp_send_json_error( array( 'message' => 'Permission denied.' ) );
         }
@@ -83,7 +93,7 @@ class ZNC_Network_Admin {
         $action  = isset( $_POST['enrollment_action'] ) ? sanitize_text_field( $_POST['enrollment_action'] ) : '';
 
         if ( ! $blog_id || ! in_array( $action, array( 'enroll', 'remove' ), true ) ) {
-            wp_send_json_error( array( 'message' => 'Invalid parameters. blog_id=' . $blog_id . ' action=' . $action ) );
+            wp_send_json_error( array( 'message' => 'Invalid parameters.' ) );
         }
 
         $details = get_blog_details( $blog_id );
@@ -118,15 +128,12 @@ class ZNC_Network_Admin {
 
         $settings = get_site_option( 'znc_network_settings', array() );
 
-        // Checkout Host
         if ( isset( $_POST['checkout_host_id'] ) ) {
             $settings['checkout_host_id'] = absint( $_POST['checkout_host_id'] );
-            // Flush URL cache when host changes
             $host = new ZNC_Checkout_Host();
             $host->flush_url_cache();
         }
 
-        // General settings
         $settings['enrollment_mode']  = sanitize_text_field( $_POST['enrollment_mode'] ?? 'manual' );
         $settings['base_currency']    = sanitize_text_field( $_POST['base_currency'] ?? 'USD' );
         $settings['mixed_currency']   = ! empty( $_POST['mixed_currency'] ) ? 1 : 0;
@@ -134,6 +141,15 @@ class ZNC_Network_Admin {
         $settings['max_items']        = absint( $_POST['max_items'] ?? 100 );
         $settings['max_shops']        = absint( $_POST['max_shops'] ?? 20 );
         $settings['debug_mode']       = ! empty( $_POST['debug_mode'] ) ? 1 : 0;
+        $settings['clear_local_cart'] = ! empty( $_POST['clear_local_cart'] ) ? 1 : 0;
+
+        // Cart page IDs
+        if ( isset( $_POST['cart_page_id'] ) ) {
+            $settings['cart_page_id'] = absint( $_POST['cart_page_id'] );
+        }
+        if ( isset( $_POST['checkout_page_id'] ) ) {
+            $settings['checkout_page_id'] = absint( $_POST['checkout_page_id'] );
+        }
 
         // MyCred point type configs
         if ( isset( $_POST['znc_mycred_types'] ) && is_array( $_POST['znc_mycred_types'] ) ) {
@@ -148,12 +164,24 @@ class ZNC_Network_Admin {
             $settings['mycred_types_config'] = $types_config;
         }
 
-        update_site_option( 'znc_network_settings', $settings );
+        // GamiPress point type configs
+        if ( isset( $_POST['znc_gamipress_types'] ) && is_array( $_POST['znc_gamipress_types'] ) ) {
+            $gp_config = array();
+            foreach ( $_POST['znc_gamipress_types'] as $slug => $config ) {
+                $gp_config[ sanitize_key( $slug ) ] = array(
+                    'enabled'       => ! empty( $config['enabled'] ) ? 1 : 0,
+                    'exchange_rate' => floatval( $config['exchange_rate'] ?? 0 ),
+                    'max_percent'   => absint( $config['max_percent'] ?? 100 ),
+                );
+            }
+            $settings['gamipress_types_config'] = $gp_config;
+        }
 
+        update_site_option( 'znc_network_settings', $settings );
         wp_send_json_success( array( 'message' => 'Settings saved successfully.' ) );
     }
 
-    /* ── AJAX: Save Security Settings ─────────────────────────── */
+    /* ── AJAX: Save Security ──────────────────────────────────── */
 
     public static function ajax_save_security() {
         check_ajax_referer( 'znc_network_admin', 'nonce' );
@@ -162,12 +190,11 @@ class ZNC_Network_Admin {
         }
 
         $settings = get_site_option( 'znc_network_settings', array() );
-        $settings['clock_skew']   = absint( $_POST['clock_skew'] ?? 300 );
-        $settings['rate_limit']   = absint( $_POST['rate_limit'] ?? 60 );
-        $settings['ip_whitelist'] = sanitize_textarea_field( $_POST['ip_whitelist'] ?? '' );
+        $settings['clock_skew']    = absint( $_POST['clock_skew'] ?? 300 );
+        $settings['rate_limit']    = absint( $_POST['rate_limit'] ?? 60 );
+        $settings['ip_whitelist']  = sanitize_textarea_field( $_POST['ip_whitelist'] ?? '' );
 
         update_site_option( 'znc_network_settings', $settings );
-
         wp_send_json_success( array( 'message' => 'Security settings saved.' ) );
     }
 
@@ -178,9 +205,7 @@ class ZNC_Network_Admin {
         if ( ! current_user_can( 'manage_network_options' ) ) {
             wp_send_json_error( array( 'message' => 'Permission denied.' ) );
         }
-
-        $new_secret = wp_generate_password( 64, true, true );
-        update_site_option( 'znc_rest_secret', $new_secret );
+        update_site_option( 'znc_rest_secret', wp_generate_password( 64, true, true ) );
         wp_send_json_success( array( 'message' => 'Secret regenerated and saved.' ) );
     }
 
@@ -193,14 +218,10 @@ class ZNC_Network_Admin {
         }
 
         $blog_id = absint( $_POST['blog_id'] ?? 0 );
-        if ( ! $blog_id ) {
-            wp_send_json_error( array( 'message' => 'Invalid blog ID.' ) );
-        }
+        if ( ! $blog_id ) wp_send_json_error( array( 'message' => 'Invalid blog ID.' ) );
 
         $details = get_blog_details( $blog_id );
-        if ( ! $details ) {
-            wp_send_json_error( array( 'message' => 'Site not found.' ) );
-        }
+        if ( ! $details ) wp_send_json_error( array( 'message' => 'Site not found.' ) );
 
         global $wpdb;
         $prefix = $wpdb->get_blog_prefix( $blog_id );
@@ -213,6 +234,26 @@ class ZNC_Network_Admin {
             'blogname' => $details->blogname,
             'has_wc'   => $has_wc,
             'status'   => $has_wc ? 'connected' : 'no_woocommerce',
+        ) );
+    }
+
+    /* ── AJAX: Detect Point Types (MyCred + GamiPress) ────────── */
+
+    public static function ajax_detect_point_types() {
+        check_ajax_referer( 'znc_network_admin', 'nonce' );
+        if ( ! current_user_can( 'manage_network_options' ) ) {
+            wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+        }
+
+        $mycred_types    = ZNC_MyCred_Engine::detect_all_types();
+        $gamipress_types = ZNC_GamiPress_Engine::detect_all_types();
+
+        wp_send_json_success( array(
+            'message'          => 'Detection complete.',
+            'mycred_types'     => $mycred_types,
+            'gamipress_types'  => $gamipress_types,
+            'mycred_count'     => count( $mycred_types ),
+            'gamipress_count'  => count( $gamipress_types ),
         ) );
     }
 }

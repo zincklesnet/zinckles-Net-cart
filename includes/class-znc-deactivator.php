@@ -1,11 +1,18 @@
 <?php
+/**
+ * Deactivator — v1.4.0
+ * Cleanup on plugin deactivation.
+ */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Deactivator {
-    public static function deactivate() {
-        wp_clear_scheduled_hook( 'znc_inventory_retry' );
+
+    public static function deactivate( $network_wide ) {
+        // Clear scheduled events
         wp_clear_scheduled_hook( 'znc_cart_cleanup' );
-        delete_site_transient( 'znc_mycred_point_types' );
-        // Don't delete tables or settings on deactivation — only on uninstall
+        wp_clear_scheduled_hook( 'znc_inventory_refresh' );
+
+        // Flush rewrite rules
+        flush_rewrite_rules();
     }
 }

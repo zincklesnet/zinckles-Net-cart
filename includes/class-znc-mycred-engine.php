@@ -1,127 +1,148 @@
 <?php
 /**
- * MyCred Engine — v1.3.2
- * Detects ALL MyCred point types across the network via mycred_get_types()
- * and direct DB scan. Per-type exchange rate, max %, and enable/disable.
+ * MyCred Engine — v1.4.0
+ * Detects and manages all MyCred point types across the network.
  */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_MyCred_Engine {
 
-    private static $types = null;
+    public function init() {}
 
-    public function init() { /* lazy-load everything */ }
+    /**
+     * Detect all MyCred point types from the current site.
+     * Called by AJAX auto-detect handler.
+     */
+    public static function detect_all_types() {
+        $types = array();
 
-    public static function get_all_point_types() {
-        if ( null !== self::$types ) return self::$types;
-
-        $cached = get_site_transient( 'znc_mycred_point_types' );
-        if ( is_array( $cached ) && ! empty( $cached ) ) {
-            self::$types = $cached;
-            return self::$types;
-        }
-
-        self::$types = array();
-
-        // Check host site MyCred
-        if ( function_exists( 'mycred_get_types' ) ) {
-            $types = mycred_get_types();
-            foreach ( $types as $slug => $label ) {
-                $mycred = mycred( $slug );
-                self::$types[ $slug ] = array(
-                    'slug'     => $slug,
-                    'label'    => $label,
-                    'singular' => $mycred ? $mycred->singular() : $label,
-                    'plural'   => $mycred ? $mycred->plural() : $label,
-                );
-            }
-        }
-
-        // Scan enrolled subsites for additional types via direct DB
-        $host = new ZNC_Checkout_Host();
-        $enrolled = $host->get_enrolled_ids();
-        $host_id  = $host->get_host_id();
-
-        foreach ( $enrolled as $blog_id ) {
-            if ( (int) $blog_id === (int) $host_id ) continue;
-            global $wpdb;
-            $prefix = $wpdb->get_blog_prefix( $blog_id );
-            $raw    = $wpdb->get_var(
-                "SELECT option_value FROM {$prefix}options WHERE option_name = 'mycred_types' LIMIT 1"
-            );
-            if ( $raw ) {
-                $subsite_types = maybe_unserialize( $raw );
-                if ( is_array( $subsite_types ) ) {
-                    foreach ( $subsite_types as $slug => $label ) {
-                        if ( ! isset( self::$types[ $slug ] ) ) {
-                            self::$types[ $slug ] = array(
-                                'slug'     => $slug,
-                                'label'    => $label,
-                                'singular' => $label,
-                                'plural'   => $label,
-                                'source'   => 'subsite_' . $blog_id,
-                            );
-                        }
-                    }
+        if ( ! function_exists( 'mycred' ) ) {
+            // Try loading from options directly
+            $raw = get_option( 'mycred_types', array() );
+            if ( ! empty( $raw ) && is_array( $raw ) ) {
+                foreach ( $raw as $slug => $label ) {
+                    $types[ $slug ] = array(
+                        'label'         => $label,
+                        'slug'          => $slug,
+                        'singular'      => $label,
+                        'plural'        => $label,
+                        'prefix'        => '',
+                        'suffix'        => '',
+                        'exchange_rate' => 1,
+                        'enabled'       => 1,
+                    );
                 }
             }
+            return $types;
         }
 
-        if ( empty( self::$types ) ) {
-            self::$types['mycred_default'] = array(
-                'slug' => 'mycred_default', 'label' => 'ZCreds',
-                'singular' => 'ZCred', 'plural' => 'ZCreds',
+        // MyCred is active — use API
+        $registered = mycred_get_types();
+        if ( empty( $registered ) ) return $types;
+
+        foreach ( $registered as $slug => $label ) {
+            $core = mycred( $slug );
+            $types[ $slug ] = array(
+                'label'         => $label,
+                'slug'          => $slug,
+                'singular'      => $core->singular(),
+                'plural'        => $core->plural(),
+                'prefix'        => $core->before,
+                'suffix'        => $core->after,
+                'exchange_rate' => 1,
+                'enabled'       => 1,
             );
         }
 
-        set_site_transient( 'znc_mycred_point_types', self::$types, 3600 );
-        return self::$types;
+        return $types;
     }
 
-    public static function get_types_config() {
+    /**
+     * Detect MyCred types across all enrolled subsites.
+     */
+    public static function detect_network_types() {
         $settings = get_site_option( 'znc_network_settings', array() );
-        $config   = isset( $settings['mycred_types_config'] ) ? (array) $settings['mycred_types_config'] : array();
-        $types    = self::get_all_point_types();
-
-        foreach ( $types as $slug => $info ) {
-            if ( ! isset( $config[ $slug ] ) ) {
-                $config[ $slug ] = array( 'enabled' => 0, 'exchange_rate' => 0, 'max_percent' => 100 );
-            }
-            $config[ $slug ]['info'] = $info;
+        $enrolled = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
+        if ( ! in_array( get_main_site_id(), $enrolled ) ) {
+            $enrolled[] = get_main_site_id();
         }
-        return $config;
+
+        $all_types = array();
+
+        foreach ( $enrolled as $blog_id ) {
+            switch_to_blog( $blog_id );
+            $site_types = self::detect_all_types();
+            foreach ( $site_types as $slug => $type ) {
+                if ( ! isset( $all_types[ $slug ] ) ) {
+                    $type['blog_ids'] = array( (int) $blog_id );
+                    $all_types[ $slug ] = $type;
+                } else {
+                    $all_types[ $slug ]['blog_ids'][] = (int) $blog_id;
+                }
+            }
+            restore_current_blog();
+        }
+
+        return $all_types;
     }
 
-    public static function get_balance( $user_id, $type_slug = 'mycred_default' ) {
+    /**
+     * Get user balance for a specific point type.
+     */
+    public static function get_balance( $user_id, $type = 'mycred_default' ) {
         if ( ! function_exists( 'mycred_get_users_balance' ) ) return 0;
-        return (float) mycred_get_users_balance( $user_id, $type_slug );
+        return (float) mycred_get_users_balance( $user_id, $type );
     }
 
-    public static function deduct( $user_id, $amount, $type_slug = 'mycred_default', $ref = 'znc_checkout', $entry = '' ) {
+    /**
+     * Deduct points from user.
+     */
+    public static function deduct( $user_id, $amount, $type = 'mycred_default', $ref = 'znc_purchase', $data = array() ) {
         if ( ! function_exists( 'mycred' ) ) return false;
-        $mycred = mycred( $type_slug );
-        if ( ! $mycred ) return false;
-        $mycred->update_users_balance( $user_id, -abs( $amount ), $type_slug );
-        $mycred->add_to_log( $ref, $user_id, -abs( $amount ), $entry ?: 'Net Cart checkout deduction', '', '', $type_slug );
-        return true;
+        $core = mycred( $type );
+        if ( ! $core ) return false;
+        return $core->update_users_balance( $user_id, 0 - abs( $amount ), $ref, $data );
     }
 
-    public static function refund( $user_id, $amount, $type_slug = 'mycred_default', $ref = 'znc_refund', $entry = '' ) {
+    /**
+     * Award points to user.
+     */
+    public static function award( $user_id, $amount, $type = 'mycred_default', $ref = 'znc_refund', $data = array() ) {
         if ( ! function_exists( 'mycred' ) ) return false;
-        $mycred = mycred( $type_slug );
-        if ( ! $mycred ) return false;
-        $mycred->update_users_balance( $user_id, abs( $amount ), $type_slug );
-        $mycred->add_to_log( $ref, $user_id, abs( $amount ), $entry ?: 'Net Cart refund', '', '', $type_slug );
-        return true;
+        $core = mycred( $type );
+        if ( ! $core ) return false;
+        return $core->update_users_balance( $user_id, abs( $amount ), $ref, $data );
     }
 
-    public static function validate_deduction( $user_id, $amount, $type_slug = 'mycred_default' ) {
-        return self::get_balance( $user_id, $type_slug ) >= abs( $amount );
+    /**
+     * Validate user has enough points for a deduction.
+     */
+    public static function validate_deduction( $user_id, $amount, $type = 'mycred_default' ) {
+        $balance = self::get_balance( $user_id, $type );
+        return $balance >= abs( $amount );
     }
 
-    public static function points_to_currency( $points, $type_slug = 'mycred_default' ) {
-        $config = self::get_types_config();
-        $rate   = isset( $config[ $type_slug ]['exchange_rate'] ) ? (float) $config[ $type_slug ]['exchange_rate'] : 0;
-        return $points * $rate;
+    /**
+     * Convert points to currency value.
+     */
+    public static function points_to_currency( $amount, $type = 'mycred_default' ) {
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $config   = isset( $settings['mycred_types_config'][ $type ] ) ? $settings['mycred_types_config'][ $type ] : array();
+        $rate     = isset( $config['exchange_rate'] ) ? (float) $config['exchange_rate'] : 1;
+        return $amount * $rate;
+    }
+
+    /**
+     * Get formatted balance string for display.
+     */
+    public static function get_formatted_balance( $user_id, $type = 'mycred_default' ) {
+        $balance = self::get_balance( $user_id, $type );
+        if ( function_exists( 'mycred' ) ) {
+            $core = mycred( $type );
+            if ( $core ) {
+                return $core->format_creds( $balance );
+            }
+        }
+        return number_format( $balance, 0 ) . ' points';
     }
 }

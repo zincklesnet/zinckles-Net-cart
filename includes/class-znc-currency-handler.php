@@ -1,35 +1,45 @@
 <?php
+/**
+ * Currency Handler — v1.4.0
+ * Mixed-currency support and formatting.
+ */
 defined( 'ABSPATH' ) || exit;
+
 class ZNC_Currency_Handler {
+
+    private static $symbols = array(
+        'USD' => '$', 'EUR' => '€', 'GBP' => '£', 'CAD' => 'CA$', 'AUD' => 'A$',
+        'JPY' => '¥', 'CNY' => '¥', 'INR' => '₹', 'BRL' => 'R$', 'MXN' => 'MX$',
+        'MYR' => 'RM', 'SGD' => 'S$', 'HKD' => 'HK$', 'NZD' => 'NZ$', 'KRW' => '₩',
+        'SEK' => 'kr', 'NOK' => 'kr', 'DKK' => 'kr', 'CHF' => 'CHF', 'ZAR' => 'R',
+        'RUB' => '₽', 'TRY' => '₺', 'PLN' => 'zł', 'THB' => '฿', 'IDR' => 'Rp',
+        'PHP' => '₱', 'CZK' => 'Kč', 'TWD' => 'NT$', 'AED' => 'د.إ', 'SAR' => '﷼',
+        'MYC' => 'Cr', // MyCred points
+    );
+
     public function init() {}
-    public function is_mixed( $items ) {
-        $currencies = array();
-        foreach ( $items as $item ) {
-            $cur = is_object( $item ) ? ( $item->currency ?? 'USD' ) : ( $item['currency'] ?? 'USD' );
-            $currencies[ $cur ] = true;
-        }
-        return count( $currencies ) > 1;
+
+    public static function format( $amount, $currency = 'USD' ) {
+        $symbol   = isset( self::$symbols[ $currency ] ) ? self::$symbols[ $currency ] : $currency . ' ';
+        $decimals = in_array( $currency, array( 'JPY', 'KRW', 'MYC' ), true ) ? 0 : 2;
+        return $symbol . number_format( (float) $amount, $decimals );
     }
-    public function parallel_totals( $items ) {
-        $totals = array();
-        foreach ( $items as $item ) {
-            $cur   = is_object( $item ) ? ( $item->currency ?? 'USD' ) : ( $item['currency'] ?? 'USD' );
-            $price = is_object( $item ) ? (float)( $item->price ?? 0 ) : (float)( $item['price'] ?? 0 );
-            $qty   = is_object( $item ) ? (int)( $item->quantity ?? 1 ) : (int)( $item['quantity'] ?? 1 );
-            if ( ! isset( $totals[ $cur ] ) ) $totals[ $cur ] = 0;
-            $totals[ $cur ] += $price * $qty;
-        }
-        return $totals;
+
+    public static function get_symbol( $currency ) {
+        return isset( self::$symbols[ $currency ] ) ? self::$symbols[ $currency ] : $currency;
     }
-    public function convert( $amount, $from, $to ) {
-        if ( $from === $to ) return $amount;
-        $rates = $this->get_rates();
-        $from_rate = $rates[ $from ] ?? 1;
-        $to_rate   = $rates[ $to ] ?? 1;
-        return $amount * ( $to_rate / $from_rate );
-    }
-    private function get_rates() {
+
+    public static function get_base_currency() {
         $settings = get_site_option( 'znc_network_settings', array() );
-        return $settings['exchange_rates'] ?? array( 'USD' => 1, 'EUR' => 0.92, 'GBP' => 0.79, 'CAD' => 1.36, 'AUD' => 1.53, 'JPY' => 149.5 );
+        return isset( $settings['base_currency'] ) ? $settings['base_currency'] : 'USD';
+    }
+
+    public static function is_mixed_enabled() {
+        $settings = get_site_option( 'znc_network_settings', array() );
+        return ! empty( $settings['mixed_currency'] );
+    }
+
+    public static function is_points_currency( $currency ) {
+        return in_array( $currency, array( 'MYC', 'POINTS', 'ZCREDS' ), true );
     }
 }

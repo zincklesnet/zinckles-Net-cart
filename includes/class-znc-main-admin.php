@@ -1,59 +1,89 @@
 <?php
+/**
+ * Main Admin — v1.4.0
+ * Admin page on the main/checkout-host site showing global cart stats.
+ */
 defined( 'ABSPATH' ) || exit;
+
 class ZNC_Main_Admin {
-    private $store;
-    public function __construct( ZNC_Global_Cart_Store $store ) { $this->store = $store; }
+
     public function init() {
+        if ( ! is_main_site() ) return;
         add_action( 'admin_menu', array( $this, 'add_menu' ) );
     }
+
     public function add_menu() {
-        add_menu_page( 'Net Cart', 'Net Cart', 'manage_woocommerce', 'znc-settings', array( $this, 'render' ), 'dashicons-cart', 56 );
-        add_submenu_page( 'znc-settings', 'Settings', 'Settings', 'manage_woocommerce', 'znc-settings', array( $this, 'render' ) );
-        add_submenu_page( 'znc-settings', 'Cart Browser', 'Cart Browser', 'manage_woocommerce', 'znc-cart-browser', array( $this, 'render_cart_browser' ) );
+        add_menu_page(
+            __( 'Zinckles Net Cart', 'zinckles-net-cart' ),
+            __( 'Net Cart', 'zinckles-net-cart' ),
+            'manage_woocommerce',
+            'znc-main-admin',
+            array( $this, 'render_page' ),
+            'dashicons-cart',
+            58
+        );
     }
-    public function render() {
-        $host = new ZNC_Checkout_Host();
+
+    public function render_page() {
+        global $wpdb;
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $host_id  = isset( $settings['checkout_host_id'] ) ? (int) $settings['checkout_host_id'] : get_main_site_id();
+        $prefix   = $wpdb->get_blog_prefix( $host_id );
+        $table    = $prefix . 'znc_global_cart';
+
+        $total_items = 0;
+        $total_users = 0;
+        $total_value = 0;
+        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+
+        if ( $table_exists ) {
+            $total_items = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+            $total_users = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT user_id) FROM {$table}" );
+            $total_value = (float) $wpdb->get_var( "SELECT COALESCE(SUM(line_total),0) FROM {$table}" );
+        }
+
+        $enrolled = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
         ?>
-        <div class="wrap">
-            <h1>Zinckles Net Cart — Checkout Host Settings</h1>
-            <div class="card" style="max-width:600px;padding:20px;">
-                <h2>This is the Checkout Host</h2>
-                <p>This site hosts the global cart, checkout, and My Account pages for the entire network.</p>
-                <table class="widefat">
-                    <tr><td>Site</td><td><strong><?php echo esc_html( get_bloginfo('name') ); ?></strong></td></tr>
-                    <tr><td>Enrolled Shops</td><td><?php echo count( $host->get_enrolled_shop_ids() ); ?></td></tr>
-                    <tr><td>Cart Page</td><td><?php echo get_option('znc_cart_page_id') ? '<span style="color:green;">Set (ID: ' . get_option('znc_cart_page_id') . ')</span>' : '<span style="color:red;">Not set — create a page with [znc_global_cart]</span>'; ?></td></tr>
-                    <tr><td>Checkout Page</td><td><?php echo get_option('znc_checkout_page_id') ? '<span style="color:green;">Set (ID: ' . get_option('znc_checkout_page_id') . ')</span>' : '<span style="color:red;">Not set — create a page with [znc_checkout]</span>'; ?></td></tr>
+        <div class="wrap znc-admin-wrap">
+            <h1><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Zinckles Net Cart — Dashboard', 'zinckles-net-cart' ); ?></h1>
+            <div class="znc-stats-grid">
+                <div class="znc-stat-card">
+                    <span class="znc-stat-value"><?php echo esc_html( $total_items ); ?></span>
+                    <span class="znc-stat-label"><?php esc_html_e( 'Cart Items', 'zinckles-net-cart' ); ?></span>
+                </div>
+                <div class="znc-stat-card">
+                    <span class="znc-stat-value"><?php echo esc_html( $total_users ); ?></span>
+                    <span class="znc-stat-label"><?php esc_html_e( 'Active Carts', 'zinckles-net-cart' ); ?></span>
+                </div>
+                <div class="znc-stat-card">
+                    <span class="znc-stat-value"><?php echo esc_html( ZNC_Currency_Handler::format( $total_value ) ); ?></span>
+                    <span class="znc-stat-label"><?php esc_html_e( 'Total Value', 'zinckles-net-cart' ); ?></span>
+                </div>
+                <div class="znc-stat-card">
+                    <span class="znc-stat-value"><?php echo count( $enrolled ); ?></span>
+                    <span class="znc-stat-label"><?php esc_html_e( 'Enrolled Sites', 'zinckles-net-cart' ); ?></span>
+                </div>
+            </div>
+
+            <div class="znc-info-card">
+                <h2><?php esc_html_e( 'Quick Links', 'zinckles-net-cart' ); ?></h2>
+                <ul>
+                    <li><a href="<?php echo esc_url( network_admin_url( 'admin.php?page=zinckles-net-cart' ) ); ?>"><?php esc_html_e( 'Network Settings', 'zinckles-net-cart' ); ?></a></li>
+                    <li><a href="<?php echo esc_url( network_admin_url( 'admin.php?page=znc-network-subsites' ) ); ?>"><?php esc_html_e( 'Enrolled Subsites', 'zinckles-net-cart' ); ?></a></li>
+                    <li><a href="<?php echo esc_url( network_admin_url( 'admin.php?page=znc-network-security' ) ); ?>"><?php esc_html_e( 'Security Settings', 'zinckles-net-cart' ); ?></a></li>
+                    <li><a href="<?php echo esc_url( network_admin_url( 'admin.php?page=znc-network-diagnostics' ) ); ?>"><?php esc_html_e( 'Diagnostics', 'zinckles-net-cart' ); ?></a></li>
+                </ul>
+            </div>
+
+            <div class="znc-info-card">
+                <h2><?php esc_html_e( 'Version Info', 'zinckles-net-cart' ); ?></h2>
+                <table class="widefat striped">
+                    <tr><td><?php esc_html_e( 'Plugin Version', 'zinckles-net-cart' ); ?></td><td><strong><?php echo esc_html( ZNC_VERSION ); ?></strong></td></tr>
+                    <tr><td><?php esc_html_e( 'Checkout Host', 'zinckles-net-cart' ); ?></td><td>Blog ID <?php echo esc_html( $host_id ); ?></td></tr>
+                    <tr><td><?php esc_html_e( 'DB Table', 'zinckles-net-cart' ); ?></td><td><?php echo $table_exists ? '<span style="color:#46b450;">✓ Exists</span>' : '<span style="color:#dc3232;">✗ Missing</span>'; ?></td></tr>
+                    <tr><td><?php esc_html_e( 'Base Currency', 'zinckles-net-cart' ); ?></td><td><?php echo esc_html( $settings['base_currency'] ?? 'USD' ); ?></td></tr>
                 </table>
             </div>
-        </div>
-        <?php
-    }
-    public function render_cart_browser() {
-        global $wpdb;
-        $table = $wpdb->prefix . 'znc_global_cart';
-        $carts = $wpdb->get_results( "SELECT user_id, COUNT(*) as items, COUNT(DISTINCT blog_id) as shops, SUM(price * quantity) as total FROM {$table} GROUP BY user_id ORDER BY total DESC LIMIT 50" );
-        ?>
-        <div class="wrap">
-            <h1>Net Cart — Cart Browser</h1>
-            <table class="wp-list-table widefat fixed striped">
-                <thead><tr><th>User</th><th>Items</th><th>Shops</th><th>Total</th></tr></thead>
-                <tbody>
-                <?php foreach ( $carts as $cart ) :
-                    $user = get_userdata( $cart->user_id );
-                ?>
-                    <tr>
-                        <td><?php echo $user ? esc_html( $user->display_name . ' (' . $user->user_email . ')' ) : 'User #' . $cart->user_id; ?></td>
-                        <td><?php echo $cart->items; ?></td>
-                        <td><?php echo $cart->shops; ?></td>
-                        <td><?php echo number_format( $cart->total, 2 ); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-                <?php if ( empty( $carts ) ) : ?>
-                    <tr><td colspan="4">No active carts.</td></tr>
-                <?php endif; ?>
-                </tbody>
-            </table>
         </div>
         <?php
     }
