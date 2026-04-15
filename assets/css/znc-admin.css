@@ -1,0 +1,10 @@
+.znc-admin-wrap{max-width:900px}
+.znc-admin-wrap h1{color:#1d2327;border-bottom:2px solid #7c3aed;padding-bottom:10px;margin-bottom:20px}
+.znc-admin-wrap h2{color:#7c3aed;margin-top:24px;margin-bottom:8px;font-size:16px}
+.znc-status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600}
+.znc-enrolled{background:#d1fae5;color:#065f46}
+.znc-not-enrolled{background:#fef3c7;color:#92400e}
+.znc-tag{display:inline-block;background:#ede9fe;color:#5b21b6;padding:2px 10px;border-radius:10px;font-size:12px;margin:2px}
+.znc-admin-wrap .button{margin-right:4px}
+.znc-admin-wrap .form-table th{width:180px;font-weight:600}
+.znc-admin-wrap .form-table td .description{color:#666;font-style:italic;margin-top:4px}
