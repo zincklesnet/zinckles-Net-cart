@@ -1,323 +1,230 @@
 <?php
 /**
- * Shortcodes — v1.4.1
- *
- * Registers all Net Cart shortcodes with multiple variations.
+ * Shortcodes — v1.5.0 REWRITE
+ * All shortcodes now read from wp_usermeta via ZNC_Cart_Snapshot.
+ * Zero switch_to_blog(), zero custom table queries.
  */
 defined( 'ABSPATH' ) || exit;
 
 class ZNC_Shortcodes {
 
-    private static $host;
+    private static $host = null;
 
     public static function init( ZNC_Checkout_Host $host ) {
         self::$host = $host;
-
-        // Primary shortcodes
-        add_shortcode( 'znc_global_cart',    array( __CLASS__, 'render_global_cart' ) );
-        add_shortcode( 'znc_checkout',       array( __CLASS__, 'render_checkout' ) );
-
-        // Variation shortcodes
-        add_shortcode( 'znc_cart_count',     array( __CLASS__, 'render_cart_count' ) );
-        add_shortcode( 'znc_cart_total',     array( __CLASS__, 'render_cart_total' ) );
-        add_shortcode( 'znc_shop_list',      array( __CLASS__, 'render_shop_list' ) );
-        add_shortcode( 'znc_cart_button',    array( __CLASS__, 'render_cart_button' ) );
-        add_shortcode( 'znc_points_balance', array( __CLASS__, 'render_points_balance' ) );
-        add_shortcode( 'znc_mini_cart',      array( __CLASS__, 'render_mini_cart' ) );
-        add_shortcode( 'znc_order_history',  array( __CLASS__, 'render_order_history' ) );
-
-        // Enqueue front-end assets on pages with our shortcodes
-        add_action( 'wp_enqueue_scripts', array( __CLASS__, 'maybe_enqueue' ) );
+        add_shortcode( 'znc_global_cart',     array( __CLASS__, 'global_cart' ) );
+        add_shortcode( 'znc_checkout',        array( __CLASS__, 'checkout' ) );
+        add_shortcode( 'znc_cart_count',      array( __CLASS__, 'cart_count' ) );
+        add_shortcode( 'znc_cart_total',      array( __CLASS__, 'cart_total' ) );
+        add_shortcode( 'znc_cart_button',     array( __CLASS__, 'cart_button' ) );
+        add_shortcode( 'znc_mini_cart',       array( __CLASS__, 'mini_cart' ) );
+        add_shortcode( 'znc_shop_count',      array( __CLASS__, 'shop_count' ) );
+        add_shortcode( 'znc_points_balance',  array( __CLASS__, 'points_balance' ) );
+        add_shortcode( 'znc_enrolled_shops',  array( __CLASS__, 'enrolled_shops' ) );
+        add_shortcode( 'znc_cart_summary',    array( __CLASS__, 'cart_summary' ) );
     }
 
-    public static function maybe_enqueue() {
-        global $post;
-        if ( ! $post ) return;
-        $shortcodes = array( 'znc_global_cart', 'znc_checkout', 'znc_mini_cart', 'znc_cart_button', 'znc_order_history' );
-        foreach ( $shortcodes as $sc ) {
-            if ( has_shortcode( $post->post_content, $sc ) ) {
-                wp_enqueue_style( 'znc-front', ZNC_PLUGIN_URL . 'assets/css/znc-front.css', array(), ZNC_VERSION );
-                wp_enqueue_script( 'znc-front', ZNC_PLUGIN_URL . 'assets/js/znc-front.js', array( 'jquery' ), ZNC_VERSION, true );
-                wp_localize_script( 'znc-front', 'zncFront', array(
-                    'ajaxUrl'  => admin_url( 'admin-ajax.php' ),
-                    'nonce'    => wp_create_nonce( 'znc_front' ),
-                    'cartUrl'  => self::$host->get_cart_url(),
-                    'checkoutUrl' => self::$host->get_checkout_url(),
-                ) );
-                break;
-            }
-        }
-    }
-
-    /* ── Primary: Global Cart ─────────────────────────────────── */
-
-    public static function render_global_cart( $atts ) {
-        $atts = shortcode_atts( array(
-            'show_shop_badges' => 'yes',
-            'show_thumbnails'  => 'yes',
-            'layout'           => 'grouped', // grouped|flat|tabbed
-        ), $atts );
-
+    /* ── [znc_global_cart] ────────────────────────────────────── */
+    public static function global_cart( $atts ) {
         if ( ! is_user_logged_in() ) {
-            return '<div class="znc-cart znc-cart-login"><p>Please <a href="' . wp_login_url( self::$host->get_cart_url() ) . '">log in</a> to view your cart.</p></div>';
+            return '<div class="znc-login-required"><p>Please <a href="' . esc_url( wp_login_url( get_permalink() ) ) . '">log in</a> to view your global cart.</p></div>';
         }
 
-        $items = self::get_cart_items();
+        wp_enqueue_style( 'znc-front', ZNC_PLUGIN_URL . 'assets/css/znc-front.css', array(), ZNC_VERSION );
+        wp_enqueue_script( 'znc-front', ZNC_PLUGIN_URL . 'assets/js/znc-front.js', array( 'jquery' ), ZNC_VERSION, true );
+        wp_localize_script( 'znc-front', 'zncFront', array(
+            'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+            'nonce'        => wp_create_nonce( 'znc_cart_action' ),
+            'checkoutUrl'  => self::$host ? self::$host->get_checkout_url() : '',
+            'currency'     => get_woocommerce_currency_symbol(),
+        ) );
 
         ob_start();
-        echo '<div class="znc-cart znc-layout-' . esc_attr( $atts['layout'] ) . '">';
-        echo '<div class="znc-cart-header">';
-        echo '<h2>🛒 Your Global Cart</h2>';
-        echo '<a href="' . esc_url( self::$host->get_checkout_url() ) . '" class="znc-cart-nav">Shopping Cart → Checkout Details</a>';
-        echo '</div>';
-
-        if ( empty( $items ) ) {
-            echo '<div class="znc-cart-empty">';
-            echo '<p class="znc-empty-icon">🛒</p>';
-            echo '<p>Your Global Cart is Empty</p>';
-            echo '<p class="znc-empty-sub">Browse products on any shop in our network and add them to your cart.</p>';
-            echo '<div class="znc-empty-shops"><strong>Browse Our Shops</strong><br>';
-            $enrolled = self::$host->get_enrolled_ids();
-            foreach ( $enrolled as $bid ) {
-                $d = get_blog_details( $bid );
-                if ( $d ) echo '<a href="' . esc_url( $d->siteurl . '/shop/' ) . '">' . esc_html( $d->blogname ) . '</a> ';
-            }
-            echo '</div></div>';
-        } else {
-            $grouped = array();
-            foreach ( $items as $item ) {
-                $grouped[ $item->shop_name ][] = $item;
-            }
-
-            $total_items = 0;
-            $grand_total = 0;
-
-            foreach ( $grouped as $shop => $shop_items ) {
-                $first = $shop_items[0];
-                echo '<div class="znc-shop-group">';
-                echo '<div class="znc-shop-header">';
-                echo '<span class="znc-shop-badge" style="background:' . self::shop_color( $shop ) . '">' . esc_html( mb_substr( $shop, 0, 1 ) ) . '</span>';
-                echo '<strong>' . esc_html( $shop ) . '</strong>';
-                echo '<span class="znc-shop-currency">' . esc_html( $first->currency ) . '</span>';
-                echo '</div>';
-
-                echo '<table class="znc-cart-table"><thead><tr>';
-                if ( $atts['show_thumbnails'] === 'yes' ) echo '<th></th>';
-                echo '<th>Product</th><th>Price</th><th>Qty</th><th>Total</th><th></th>';
-                echo '</tr></thead><tbody>';
-
-                foreach ( $shop_items as $item ) {
-                    $line_total = $item->price * $item->quantity;
-                    $total_items += $item->quantity;
-                    $grand_total += $line_total;
-
-                    echo '<tr data-item-id="' . esc_attr( $item->id ) . '">';
-                    if ( $atts['show_thumbnails'] === 'yes' ) {
-                        echo '<td class="znc-thumb">';
-                        if ( $item->image_url ) echo '<img src="' . esc_url( $item->image_url ) . '" alt="" width="50">';
-                        echo '</td>';
-                    }
-                    echo '<td><a href="' . esc_url( $item->permalink ) . '">' . esc_html( $item->product_name ) . '</a>';
-                    if ( $item->sku ) echo '<br><small>SKU: ' . esc_html( $item->sku ) . '</small>';
-                    echo '</td>';
-                    echo '<td>' . esc_html( $item->currency ) . ' ' . number_format( $item->price, 2 ) . '</td>';
-                    echo '<td>' . (int) $item->quantity . '</td>';
-                    echo '<td>' . esc_html( $item->currency ) . ' ' . number_format( $line_total, 2 ) . '</td>';
-                    echo '<td><button class="znc-remove-item" data-id="' . esc_attr( $item->id ) . '">✕</button></td>';
-                    echo '</tr>';
-                }
-                echo '</tbody></table></div>';
-            }
-
-            echo '<div class="znc-cart-footer">';
-            echo '<span class="znc-total-items">' . $total_items . ' items from ' . count( $grouped ) . ' shop(s)</span>';
-            echo '<span class="znc-grand-total">Total: $' . number_format( $grand_total, 2 ) . '</span>';
-            echo '<a href="' . esc_url( self::$host->get_checkout_url() ) . '" class="button znc-checkout-btn">Proceed to Checkout</a>';
-            echo '</div>';
-        }
-
-        echo '</div>';
+        include ZNC_PLUGIN_DIR . 'templates/global-cart.php';
         return ob_get_clean();
     }
 
-    /* ── Primary: Checkout ────────────────────────────────────── */
-
-    public static function render_checkout( $atts ) {
+    /* ── [znc_checkout] ───────────────────────────────────────── */
+    public static function checkout( $atts ) {
         if ( ! is_user_logged_in() ) {
-            return '<p>Please <a href="' . wp_login_url() . '">log in</a> to checkout.</p>';
+            return '<div class="znc-login-required"><p>Please <a href="' . esc_url( wp_login_url( get_permalink() ) ) . '">log in</a> to checkout.</p></div>';
         }
-        $items = self::get_cart_items();
-        if ( empty( $items ) ) {
-            return '<div class="znc-checkout-empty"><p>Your cart is empty. <a href="' . esc_url( self::$host->get_cart_url() ) . '">Go to cart</a></p></div>';
-        }
+
+        wp_enqueue_style( 'znc-front', ZNC_PLUGIN_URL . 'assets/css/znc-front.css', array(), ZNC_VERSION );
+        wp_enqueue_script( 'znc-front', ZNC_PLUGIN_URL . 'assets/js/znc-front.js', array( 'jquery' ), ZNC_VERSION, true );
+        wp_localize_script( 'znc-front', 'zncFront', array(
+            'ajaxUrl'  => admin_url( 'admin-ajax.php' ),
+            'nonce'    => wp_create_nonce( 'znc_cart_action' ),
+            'currency' => get_woocommerce_currency_symbol(),
+        ) );
 
         ob_start();
-        echo '<div class="znc-checkout">';
-        echo '<h2>🛒 Net Cart Checkout</h2>';
-        echo '<p>Review your items from ' . count( array_unique( array_column( $items, 'shop_name' ) ) ) . ' shop(s) before placing your order.</p>';
-        // Checkout form would go here — hooks into WC checkout
-        echo '<p><em>Checkout integration in progress. Items are in your global cart.</em></p>';
-        echo '</div>';
+        include ZNC_PLUGIN_DIR . 'templates/checkout.php';
         return ob_get_clean();
     }
 
-    /* ── Variation: Cart Count ────────────────────────────────── */
+    /* ── [znc_cart_count] ─────────────────────────────────────── */
+    public static function cart_count( $atts ) {
+        if ( ! is_user_logged_in() ) return '<span class="znc-cart-count">0</span>';
+        $count = ZNC_Cart_Snapshot::get_count( get_current_user_id() );
+        return '<span class="znc-cart-count znc-global-cart-count">' . $count . '</span>';
+    }
 
-    public static function render_cart_count( $atts ) {
-        $atts = shortcode_atts( array( 'icon' => 'yes', 'link' => 'yes' ), $atts );
+    /* ── [znc_cart_total] ─────────────────────────────────────── */
+    public static function cart_total( $atts ) {
+        if ( ! is_user_logged_in() ) return '<span class="znc-cart-total">$0.00</span>';
+        $total    = ZNC_Cart_Snapshot::get_total( get_current_user_id() );
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $currency = isset( $settings['base_currency'] ) ? $settings['base_currency'] : 'USD';
+        $symbol   = function_exists( 'get_woocommerce_currency_symbol' ) ? get_woocommerce_currency_symbol( $currency ) : '$';
+        return '<span class="znc-cart-total">' . $symbol . number_format( $total, 2 ) . '</span>';
+    }
+
+    /* ── [znc_cart_button] ────────────────────────────────────── */
+    public static function cart_button( $atts ) {
+        $atts = shortcode_atts( array( 'text' => 'View Global Cart', 'class' => '' ), $atts );
+        $url  = self::$host ? self::$host->get_cart_url() : '#';
+        $count = is_user_logged_in() ? ZNC_Cart_Snapshot::get_count( get_current_user_id() ) : 0;
+        $cls   = 'znc-cart-button ' . esc_attr( $atts['class'] );
+        return '<a href="' . esc_url( $url ) . '" class="' . $cls . '">🛒 ' . esc_html( $atts['text'] ) . ' <span class="znc-cart-badge">' . $count . '</span></a>';
+    }
+
+    /* ── [znc_mini_cart] ──────────────────────────────────────── */
+    public static function mini_cart( $atts ) {
         if ( ! is_user_logged_in() ) return '';
-        $count = self::get_item_count();
-        $out = '';
-        if ( $atts['icon'] === 'yes' ) $out .= '🛒 ';
-        $out .= '<span class="znc-global-cart-count">' . $count . '</span>';
-        if ( $atts['link'] === 'yes' ) {
-            $out = '<a href="' . esc_url( self::$host->get_cart_url() ) . '" class="znc-cart-count-link">' . $out . '</a>';
-        }
-        return $out;
-    }
 
-    /* ── Variation: Cart Total ────────────────────────────────── */
+        $user_id = get_current_user_id();
+        $cart    = ZNC_Cart_Snapshot::get_cart( $user_id );
+        $count   = ZNC_Cart_Snapshot::get_count( $user_id );
+        $total   = ZNC_Cart_Snapshot::get_total( $user_id );
+        $symbol  = function_exists( 'get_woocommerce_currency_symbol' ) ? get_woocommerce_currency_symbol() : '$';
 
-    public static function render_cart_total( $atts ) {
-        $atts = shortcode_atts( array( 'currency' => '' ), $atts );
-        if ( ! is_user_logged_in() ) return '';
-        $items = self::get_cart_items();
-        $total = 0;
-        foreach ( $items as $item ) {
-            $total += $item->price * $item->quantity;
-        }
-        $cur = $atts['currency'] ?: ( ! empty( $items ) ? $items[0]->currency : 'USD' );
-        return '<span class="znc-cart-total">' . esc_html( $cur ) . ' ' . number_format( $total, 2 ) . '</span>';
-    }
+        $html = '<div class="znc-mini-cart">';
+        $html .= '<div class="znc-mini-header">🛒 Net Cart <span class="znc-cart-badge">' . $count . '</span></div>';
 
-    /* ── Variation: Shop List ─────────────────────────────────── */
-
-    public static function render_shop_list( $atts ) {
-        $atts = shortcode_atts( array( 'style' => 'list' ), $atts ); // list|grid|badges
-        $enrolled = self::$host->get_enrolled_ids();
-        if ( empty( $enrolled ) ) return '<p>No shops available.</p>';
-
-        $class = 'znc-shop-list znc-shop-' . esc_attr( $atts['style'] );
-        $out = '<div class="' . $class . '">';
-        foreach ( $enrolled as $bid ) {
-            $d = get_blog_details( $bid );
-            if ( ! $d ) continue;
-            $out .= '<div class="znc-shop-item">';
-            $out .= '<a href="' . esc_url( $d->siteurl . '/shop/' ) . '">';
-            $out .= '<span class="znc-shop-badge" style="background:' . self::shop_color( $d->blogname ) . '">' . esc_html( mb_substr( $d->blogname, 0, 1 ) ) . '</span>';
-            $out .= '<span class="znc-shop-name">' . esc_html( $d->blogname ) . '</span>';
-            $out .= '</a></div>';
-        }
-        $out .= '</div>';
-        return $out;
-    }
-
-    /* ── Variation: Cart Button ────────────────────────────────── */
-
-    public static function render_cart_button( $atts ) {
-        $atts = shortcode_atts( array( 'text' => 'View Global Cart', 'style' => 'button' ), $atts );
-        $count = is_user_logged_in() ? self::get_item_count() : 0;
-        $badge = $count > 0 ? ' <span class="znc-cart-badge">' . $count . '</span>' : '';
-        $class = $atts['style'] === 'link' ? 'znc-cart-link' : 'button znc-cart-button';
-        return '<a href="' . esc_url( self::$host->get_cart_url() ) . '" class="' . $class . '">🛒 ' . esc_html( $atts['text'] ) . $badge . '</a>';
-    }
-
-    /* ── Variation: Points Balance ─────────────────────────────── */
-
-    public static function render_points_balance( $atts ) {
-        $atts = shortcode_atts( array( 'type' => 'all' ), $atts ); // all|mycred|gamipress
-        if ( ! is_user_logged_in() ) return '';
-        $uid = get_current_user_id();
-        $out = '<div class="znc-points-balance">';
-
-        if ( in_array( $atts['type'], array( 'all', 'mycred' ), true ) && function_exists( 'mycred_get_types' ) ) {
-            foreach ( mycred_get_types() as $slug => $label ) {
-                $bal = mycred_get_users_balance( $uid, $slug );
-                $out .= '<div class="znc-point-row"><span class="znc-point-label">' . esc_html( $label ) . '</span>';
-                $out .= '<span class="znc-point-value">' . number_format( $bal, 0 ) . '</span></div>';
-            }
-        }
-
-        if ( in_array( $atts['type'], array( 'all', 'gamipress' ), true ) && function_exists( 'gamipress_get_user_points' ) ) {
-            $gp = ZNC_GamiPress_Engine::detect_all_types();
-            foreach ( $gp as $slug => $info ) {
-                $bal = gamipress_get_user_points( $uid, $slug );
-                $out .= '<div class="znc-point-row"><span class="znc-point-label">' . esc_html( $info['label'] ) . '</span>';
-                $out .= '<span class="znc-point-value">' . number_format( $bal, 0 ) . '</span></div>';
-            }
-        }
-
-        $out .= '</div>';
-        return $out;
-    }
-
-    /* ── Variation: Mini Cart ──────────────────────────────────── */
-
-    public static function render_mini_cart( $atts ) {
-        $atts = shortcode_atts( array( 'max' => 3 ), $atts );
-        if ( ! is_user_logged_in() ) return '';
-        $items = self::get_cart_items();
-        $count = 0;
-        foreach ( $items as $i ) $count += $i->quantity;
-
-        $out = '<div class="znc-mini-cart">';
-        $out .= '<div class="znc-mini-header">🛒 Net Cart <span class="znc-cart-badge">' . $count . '</span></div>';
-        if ( empty( $items ) ) {
-            $out .= '<p class="znc-mini-empty">Empty</p>';
+        if ( empty( $cart ) ) {
+            $html .= '<p class="znc-empty">Your global cart is empty.</p>';
         } else {
+            $html .= '<ul class="znc-mini-items">';
             $shown = 0;
-            foreach ( $items as $item ) {
-                if ( $shown >= (int) $atts['max'] ) break;
-                $out .= '<div class="znc-mini-item">';
-                if ( $item->image_url ) $out .= '<img src="' . esc_url( $item->image_url ) . '" width="30" height="30">';
-                $out .= '<span>' . esc_html( $item->product_name ) . ' ×' . (int) $item->quantity . '</span>';
-                $out .= '</div>';
+            foreach ( $cart as $item ) {
+                if ( $shown >= 5 ) break;
+                $name  = esc_html( isset( $item['product_name'] ) ? $item['product_name'] : 'Product' );
+                $qty   = isset( $item['quantity'] ) ? (int) $item['quantity'] : 1;
+                $price = isset( $item['price'] ) ? (float) $item['price'] : 0;
+                $shop  = esc_html( isset( $item['shop_name'] ) ? $item['shop_name'] : '' );
+                $img   = isset( $item['image_url'] ) && $item['image_url'] ? '<img src="' . esc_url( $item['image_url'] ) . '" width="40" height="40" alt="">' : '';
+
+                $html .= '<li>' . $img . '<div><strong>' . $name . '</strong>';
+                if ( $shop ) $html .= ' <small>(' . $shop . ')</small>';
+                $html .= '<br>' . $qty . ' × ' . $symbol . number_format( $price, 2 ) . '</div></li>';
                 $shown++;
             }
-            if ( count( $items ) > $shown ) {
-                $out .= '<p class="znc-mini-more">+ ' . ( count( $items ) - $shown ) . ' more</p>';
+            $html .= '</ul>';
+            if ( count( $cart ) > 5 ) {
+                $html .= '<p class="znc-more">+ ' . ( count( $cart ) - 5 ) . ' more items</p>';
             }
         }
-        $out .= '<a href="' . esc_url( self::$host->get_cart_url() ) . '" class="znc-mini-link">View Full Cart →</a>';
-        $out .= '</div>';
-        return $out;
+
+        $cart_url = self::$host ? self::$host->get_cart_url() : '#';
+        $html .= '<div class="znc-mini-footer">';
+        $html .= '<strong>Total: ' . $symbol . number_format( $total, 2 ) . '</strong>';
+        $html .= '<a href="' . esc_url( $cart_url ) . '" class="znc-cart-button">View Cart →</a>';
+        $html .= '</div></div>';
+
+        return $html;
     }
 
-    /* ── Variation: Order History ──────────────────────────────── */
-
-    public static function render_order_history( $atts ) {
-        $atts = shortcode_atts( array( 'max' => 10 ), $atts );
-        if ( ! is_user_logged_in() ) return '<p>Please log in to view your orders.</p>';
-        return '<div class="znc-order-history"><p>Order history coming in a future update.</p><a href="' . esc_url( self::$host->get_account_url() ) . '">Go to My Account →</a></div>';
+    /* ── [znc_shop_count] ─────────────────────────────────────── */
+    public static function shop_count( $atts ) {
+        if ( ! is_user_logged_in() ) return '0';
+        return (string) ZNC_Cart_Snapshot::get_shop_count( get_current_user_id() );
     }
 
-    /* ── Helpers ───────────────────────────────────────────────── */
+    /* ── [znc_points_balance] ─────────────────────────────────── */
+    public static function points_balance( $atts ) {
+        if ( ! is_user_logged_in() ) return '<span class="znc-points">0</span>';
 
-    private static function get_cart_items() {
-        global $wpdb;
-        $host_id = self::$host->get_host_id();
-        $current = get_current_blog_id();
-        $sw      = ( (int) $current !== (int) $host_id );
-        if ( $sw ) switch_to_blog( $host_id );
-        $table = $wpdb->prefix . 'znc_global_cart';
-        $items = $wpdb->get_results( $wpdb->prepare(
-            "SELECT * FROM {$table} WHERE user_id = %d ORDER BY shop_name, created_at DESC",
-            get_current_user_id()
-        ) );
-        if ( $sw ) restore_current_blog();
-        return $items ?: array();
+        $user_id = get_current_user_id();
+        $html    = '<div class="znc-points-balance">';
+
+        // MyCred
+        if ( function_exists( 'mycred_get_users_balance' ) && function_exists( 'mycred_get_types' ) ) {
+            $types = mycred_get_types();
+            foreach ( $types as $slug => $label ) {
+                $balance = mycred_get_users_balance( $user_id, $slug );
+                $html .= '<div class="znc-point-type"><span class="znc-point-label">' . esc_html( $label ) . '</span>';
+                $html .= '<span class="znc-point-value">' . number_format( $balance, 0 ) . '</span></div>';
+            }
+        }
+
+        // GamiPress
+        if ( function_exists( 'gamipress_get_user_points' ) ) {
+            $gp_types = get_posts( array( 'post_type' => 'points-type', 'post_status' => 'publish', 'numberposts' => 20 ) );
+            foreach ( $gp_types as $pt ) {
+                $balance = gamipress_get_user_points( $user_id, $pt->post_name );
+                $html .= '<div class="znc-point-type"><span class="znc-point-label">' . esc_html( $pt->post_title ) . '</span>';
+                $html .= '<span class="znc-point-value">' . number_format( $balance, 0 ) . '</span></div>';
+            }
+        }
+
+        $html .= '</div>';
+        return $html;
     }
 
-    private static function get_item_count() {
-        $items = self::get_cart_items();
-        $count = 0;
-        foreach ( $items as $i ) $count += $i->quantity;
-        return $count;
+    /* ── [znc_enrolled_shops] ─────────────────────────────────── */
+    public static function enrolled_shops( $atts ) {
+        $atts = shortcode_atts( array( 'layout' => 'grid' ), $atts );
+        $sites = ZNC_Checkout_Host::get_all_sites_for_admin();
+        $enrolled = array_filter( $sites, function( $s ) { return ! empty( $s['is_enrolled'] ); } );
+
+        if ( empty( $enrolled ) ) return '<p>No shops enrolled yet.</p>';
+
+        $cls  = $atts['layout'] === 'list' ? 'znc-shops-list' : 'znc-shops-grid';
+        $html = '<div class="' . $cls . '">';
+        foreach ( $enrolled as $site ) {
+            $html .= '<div class="znc-shop-card">';
+            $html .= '<h4><a href="' . esc_url( $site['siteurl'] ) . '">' . esc_html( $site['blogname'] ) . '</a></h4>';
+            $html .= '<span class="znc-product-count">' . (int) $site['product_count'] . ' products</span>';
+            if ( $site['has_wc'] )        $html .= ' <span class="znc-badge znc-wc">WC</span>';
+            if ( $site['has_mycred'] )    $html .= ' <span class="znc-badge znc-mc">MyCred</span>';
+            if ( $site['has_gamipress'] ) $html .= ' <span class="znc-badge znc-gp">GamiPress</span>';
+            $html .= '</div>';
+        }
+        $html .= '</div>';
+        return $html;
     }
 
-    private static function shop_color( $name ) {
-        $colors = array( '#7c3aed', '#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed', '#4f46e5' );
-        $i = abs( crc32( $name ) ) % count( $colors );
-        return $colors[ $i ];
+    /* ── [znc_cart_summary] ───────────────────────────────────── */
+    public static function cart_summary( $atts ) {
+        if ( ! is_user_logged_in() ) return '';
+
+        $user_id = get_current_user_id();
+        $grouped = ZNC_Cart_Snapshot::get_grouped( $user_id );
+        $count   = ZNC_Cart_Snapshot::get_count( $user_id );
+        $total   = ZNC_Cart_Snapshot::get_total( $user_id );
+        $symbol  = function_exists( 'get_woocommerce_currency_symbol' ) ? get_woocommerce_currency_symbol() : '$';
+
+        $html = '<div class="znc-cart-summary">';
+        $html .= '<h3>🛒 Cart Summary</h3>';
+        $html .= '<p>' . $count . ' items from ' . count( $grouped ) . ' shops</p>';
+
+        foreach ( $grouped as $blog_id => $group ) {
+            $html .= '<div class="znc-summary-shop">';
+            $html .= '<strong>' . esc_html( $group['shop_name'] ) . '</strong>';
+            $html .= '<span class="znc-summary-count">' . count( $group['items'] ) . ' items</span>';
+            $shop_total = 0;
+            foreach ( $group['items'] as $item ) {
+                $shop_total += ( isset( $item['quantity'] ) ? (int) $item['quantity'] : 1 ) * ( isset( $item['price'] ) ? (float) $item['price'] : 0 );
+            }
+            $html .= '<span class="znc-summary-total">' . $symbol . number_format( $shop_total, 2 ) . '</span>';
+            $html .= '</div>';
+        }
+
+        $html .= '<div class="znc-summary-grand-total"><strong>Total: ' . $symbol . number_format( $total, 2 ) . '</strong></div>';
+        $cart_url = self::$host ? self::$host->get_cart_url() : '#';
+        $html .= '<a href="' . esc_url( $cart_url ) . '" class="znc-cart-button">View Full Cart →</a>';
+        $html .= '</div>';
+        return $html;
     }
 }

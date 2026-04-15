@@ -5,7 +5,7 @@
  * Description: Unified multisite cart — aggregate WooCommerce products from multiple subsites
  *              into a single checkout with configurable checkout host, mixed currency support,
  *              MyCred/GamiPress integration, parent/child orders, inventory sync, widgets & shortcodes.
- * Version:     1.4.2
+ * Version:     1.5.0
  * Author:      Zinckles
  * Author URI:  https://zinckles.com
  * License:     GPL-2.0-or-later
@@ -32,11 +32,14 @@ if ( $znc_mem_limit && $znc_mem_limit !== '-1' ) {
 }
 
 /* ── Constants ────────────────────────────────────────────────── */
-define( 'ZNC_VERSION',     '1.4.2' );
+define( 'ZNC_VERSION',     '1.5.0' );
 define( 'ZNC_PLUGIN_FILE', __FILE__ );
 define( 'ZNC_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'ZNC_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
-define( 'ZNC_DB_VERSION',  '1.4.2' );
+define( 'ZNC_DB_VERSION',  '1.5.0' );
+
+/* ── Cart Storage Key (wp_usermeta — shared across entire network) */
+define( 'ZNC_CART_META_KEY', '_znc_global_cart' );
 
 /* ── Autoloader ───────────────────────────────────────────────── */
 require_once ZNC_PLUGIN_DIR . 'includes/class-znc-autoloader.php';
@@ -94,11 +97,14 @@ function znc_bootstrap() {
         $cart_sync->init();
     }
 
-    /* ── Enrolled Subsite (NOT the checkout host) ─────────────── */
-    if ( ! $is_host && $is_enrolled ) {
+    /* ── Cart Snapshot — runs on EVERY enrolled site + host ────── */
+    if ( $is_host || $is_enrolled ) {
         $snapshot = new ZNC_Cart_Snapshot( $checkout_host );
         $snapshot->init();
+    }
 
+    /* ── Enrolled Subsite (NOT the checkout host) ─────────────── */
+    if ( ! $is_host && $is_enrolled ) {
         $redirect = new ZNC_My_Account_Redirect( $checkout_host );
         $redirect->init();
 
@@ -143,10 +149,6 @@ function znc_bootstrap() {
 
         $my_account = new ZNC_My_Account( $checkout_host );
         $my_account->init();
-
-        /* Cart snapshot on host too — so host-site add-to-cart also goes to global cart */
-        $snapshot = new ZNC_Cart_Snapshot( $checkout_host );
-        $snapshot->init();
 
         if ( is_admin() ) {
             $main_admin = new ZNC_Main_Admin( $store, $checkout_host );

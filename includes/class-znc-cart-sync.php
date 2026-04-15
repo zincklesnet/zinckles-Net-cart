@@ -1,9 +1,9 @@
 <?php
 /**
- * Cart Sync — v1.4.1 NEW
+ * Cart Sync — v1.5.0 REWRITE
  *
- * Replaces the WooCommerce cart count in header/nav menus with
- * the global Net Cart count. Works on both checkout host and enrolled subsites.
+ * Replaces WooCommerce menu cart count/total with global cart data.
+ * Now reads from wp_usermeta — zero switch_to_blog().
  */
 defined( 'ABSPATH' ) || exit;
 
@@ -17,145 +17,59 @@ class ZNC_Cart_Sync {
     }
 
     public function init() {
-        // Replace WC cart fragments with global count
-        add_filter( 'woocommerce_add_to_cart_fragments', array( $this, 'global_cart_fragments' ), 99 );
-
-        // Override WC cart count function
-        add_filter( 'woocommerce_cart_contents_count', array( $this, 'override_cart_count' ), 99 );
-
-        // Inject global cart count CSS + JS on front-end
-        add_action( 'wp_footer', array( $this, 'inject_cart_sync_script' ) );
-
-        // Add global cart count to menu items
-        add_filter( 'wp_nav_menu_items', array( $this, 'add_global_cart_indicator' ), 20, 2 );
+        add_filter( 'woocommerce_cart_contents_count',      array( $this, 'filter_count' ), 999 );
+        add_filter( 'woocommerce_cart_subtotal',            array( $this, 'filter_subtotal' ), 999 );
+        add_filter( 'woocommerce_widget_cart_item_visible',  '__return_true' );
+        add_filter( 'woocommerce_add_to_cart_fragments',     array( $this, 'fragments' ), 999 );
+        add_action( 'wp_head',                               array( $this, 'inline_badge_css' ) );
     }
 
     /**
-     * Get global cart count for current user from the host DB.
-     * Uses a per-request static cache + short transient.
+     * Replace WC cart count with global cart count.
+     * Reads from wp_usermeta — works from ANY blog.
      */
-    public function get_global_count() {
-        static $count = null;
-        if ( null !== $count ) return $count;
-
-        if ( ! is_user_logged_in() ) {
-            $count = 0;
-            return $count;
-        }
-
-        $user_id   = get_current_user_id();
-        $cache_key = 'znc_cart_count_' . $user_id;
-        $cached    = get_site_transient( $cache_key );
-
-        if ( false !== $cached ) {
-            $count = (int) $cached;
-            return $count;
-        }
-
-        global $wpdb;
-        $host_id     = $this->host->get_host_id();
-        $current     = get_current_blog_id();
-        $need_switch = ( (int) $current !== (int) $host_id );
-
-        if ( $need_switch ) switch_to_blog( $host_id );
-
-        $table = $wpdb->prefix . 'znc_global_cart';
-        $count = (int) $wpdb->get_var( $wpdb->prepare(
-            "SELECT COALESCE(SUM(quantity), 0) FROM {$table} WHERE user_id = %d",
-            $user_id
-        ) );
-
-        if ( $need_switch ) restore_current_blog();
-
-        set_site_transient( $cache_key, $count, 60 ); // 1 min cache
-        return $count;
+    public function filter_count( $count ) {
+        if ( ! is_user_logged_in() ) return $count;
+        return ZNC_Cart_Snapshot::get_count( get_current_user_id() );
     }
 
     /**
-     * Override WC cart count with global count.
+     * Replace WC cart subtotal with global cart total.
      */
-    public function override_cart_count( $count ) {
-        $global = $this->get_global_count();
-        return $global > 0 ? $global : $count;
+    public function filter_subtotal( $subtotal ) {
+        if ( ! is_user_logged_in() ) return $subtotal;
+        $total = ZNC_Cart_Snapshot::get_total( get_current_user_id() );
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $currency = isset( $settings['base_currency'] ) ? $settings['base_currency'] : 'USD';
+        return html_entity_decode( get_woocommerce_currency_symbol( $currency ) ) . number_format( $total, 2 );
     }
 
     /**
-     * Add global cart count to WC AJAX fragments.
+     * AJAX fragments — update cart badge in header.
      */
-    public function global_cart_fragments( $fragments ) {
-        $count = $this->get_global_count();
+    public function fragments( $fragments ) {
+        if ( ! is_user_logged_in() ) return $fragments;
+        $count = ZNC_Cart_Snapshot::get_count( get_current_user_id() );
         $fragments['.znc-global-cart-count'] = '<span class="znc-global-cart-count">' . $count . '</span>';
-        $fragments['.znc-cart-badge']        = '<span class="znc-cart-badge" data-count="' . $count . '">' . $count . '</span>';
-
-        // Also update WC's default cart count span
-        $fragments['span.cart-items-count'] = '<span class="cart-items-count">' . $count . '</span>';
-        $fragments['.cart-contents .count'] = '<span class="count">' . $count . '</span>';
-
+        $fragments['.znc-cart-badge']        = '<span class="znc-cart-badge">' . $count . '</span>';
+        $fragments['.cart-contents .count']  = '<span class="count">' . $count . '</span>';
         return $fragments;
     }
 
     /**
-     * Inject JS that syncs the cart badge across themes.
+     * Inline CSS for cart badge.
      */
-    public function inject_cart_sync_script() {
-        if ( ! is_user_logged_in() ) return;
-        $count    = $this->get_global_count();
-        $cart_url = esc_url( $this->host->get_cart_url() );
-        ?>
-        <style>
-            .znc-cart-badge{background:#7c3aed;color:#fff;border-radius:50%;font-size:11px;
-                font-weight:700;min-width:18px;height:18px;display:inline-flex;
-                align-items:center;justify-content:center;padding:0 4px;margin-left:4px}
-            .znc-global-cart-link{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
-        </style>
-        <script>
-        (function(){
-            var count = <?php echo (int) $count; ?>;
-            var cartUrl = '<?php echo $cart_url; ?>';
-
-            // Update any existing cart count badges
-            document.querySelectorAll('.cart-items-count, .cart-count, .count, .wc-cart-count, .header-cart-count').forEach(function(el){
-                if(count > 0) el.textContent = count;
-            });
-
-            // Update cart links to point to global cart
-            document.querySelectorAll('a.cart-contents, a[href*="/cart/"], .cart-icon a, .header-cart a').forEach(function(el){
-                el.setAttribute('href', cartUrl);
-                el.setAttribute('title', 'View Global Net Cart (' + count + ' items)');
-            });
-        })();
-        </script>
-        <?php
+    public function inline_badge_css() {
+        echo '<style>.znc-cart-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;background:#7c3aed;color:#fff;border-radius:10px;font-size:11px;font-weight:700;line-height:1}</style>';
     }
 
     /**
-     * Optionally add a global cart indicator to nav menus.
-     */
-    public function add_global_cart_indicator( $items, $args ) {
-        // Only add to primary/main menu
-        if ( ! in_array( $args->theme_location, array( 'primary', 'main', 'header', 'primary-menu' ), true ) ) {
-            return $items;
-        }
-
-        if ( ! is_user_logged_in() ) return $items;
-
-        $count    = $this->get_global_count();
-        $cart_url = esc_url( $this->host->get_cart_url() );
-
-        if ( $count > 0 ) {
-            $items .= '<li class="menu-item znc-menu-cart-item">';
-            $items .= '<a href="' . $cart_url . '" class="znc-global-cart-link">';
-            $items .= '🛒 <span class="znc-cart-badge">' . $count . '</span>';
-            $items .= '</a></li>';
-        }
-
-        return $items;
-    }
-
-    /**
-     * Invalidate the cart count cache for a user.
+     * Invalidate cached cart count for a user.
+     * Called by Cart Snapshot after add/remove/update.
      */
     public static function invalidate( $user_id ) {
-        delete_site_transient( 'znc_cart_count_' . $user_id );
+        // With wp_usermeta, no cache to invalidate —
+        // get_user_meta() always returns fresh data.
+        // This method is kept for backward compatibility.
     }
 }

@@ -1,31 +1,52 @@
 <?php
 /**
- * Network Diagnostics View — v1.4.2
+ * Network Diagnostics View — v1.5.0
  * System info, global cart stats, health checks.
  *
- * v1.4.2 FIX: MyCred/GamiPress detection now uses direct DB queries
- *             via engine classes' detect_network_types() methods,
- *             NOT function_exists() which fails in network admin context.
- *             Added live detection section showing real-time availability.
+ * v1.5.0: Cart stats now read from wp_usermeta (_znc_global_cart)
+ *         instead of custom znc_global_cart table.
+ *         Custom table checks removed for cart (retained for order_map).
+ *         MyCred/GamiPress live detection preserved from v1.4.2.
  */
 defined( 'ABSPATH' ) || exit;
 
 global $wpdb;
 $settings = get_site_option( 'znc_network_settings', array() );
 $host_id  = isset( $settings['checkout_host_id'] ) ? (int) $settings['checkout_host_id'] : get_main_site_id();
-$prefix   = $wpdb->get_blog_prefix( $host_id );
-$table    = $prefix . 'znc_global_cart';
-$table_exists = (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+
+// v1.5.0: Cart stats from wp_usermeta — works from ANY blog context
+$meta_key   = '_znc_global_cart';
+$cart_rows  = $wpdb->get_results( $wpdb->prepare(
+    "SELECT user_id, meta_value FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value != '' AND meta_value IS NOT NULL",
+    $meta_key
+) );
 
 $cart_items  = 0;
 $cart_users  = 0;
 $cart_value  = 0;
 $oldest_item = '—';
-if ( $table_exists ) {
-    $cart_items  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
-    $cart_users  = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT user_id) FROM {$table}" );
-    $cart_value  = (float) $wpdb->get_var( "SELECT COALESCE(SUM(line_total),0) FROM {$table}" );
-    $oldest_item = $wpdb->get_var( "SELECT MIN(created_at) FROM {$table}" ) ?: '—';
+$user_ids_with_carts = array();
+
+if ( $cart_rows ) {
+    foreach ( $cart_rows as $row ) {
+        $data = maybe_unserialize( $row->meta_value );
+        if ( ! is_array( $data ) || empty( $data ) ) {
+            continue;
+        }
+        $user_ids_with_carts[] = (int) $row->user_id;
+        foreach ( $data as $item ) {
+            $cart_items++;
+            $qty   = isset( $item['quantity'] ) ? (int) $item['quantity'] : 1;
+            $price = isset( $item['price'] ) ? (float) $item['price'] : 0;
+            $cart_value += $qty * $price;
+            if ( isset( $item['created_at'] ) && $item['created_at'] ) {
+                if ( $oldest_item === '—' || $item['created_at'] < $oldest_item ) {
+                    $oldest_item = $item['created_at'];
+                }
+            }
+        }
+    }
+    $cart_users = count( array_unique( $user_ids_with_carts ) );
 }
 
 $enrolled = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
@@ -42,8 +63,17 @@ if ( class_exists( 'ZNC_GamiPress_Engine' ) && method_exists( 'ZNC_GamiPress_Eng
 }
 
 // Order map table
+$prefix = $wpdb->get_blog_prefix( $host_id );
 $map_table = $prefix . 'znc_order_map';
 $map_table_exists = (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$map_table}'" );
+
+$currency = isset( $settings['base_currency'] ) ? $settings['base_currency'] : 'USD';
+$symbol   = '$';
+if ( class_exists( 'ZNC_Currency_Handler' ) && method_exists( 'ZNC_Currency_Handler', 'format' ) ) {
+    $formatted_value = ZNC_Currency_Handler::format( $cart_value, $currency );
+} else {
+    $formatted_value = $symbol . number_format( $cart_value, 2 );
+}
 ?>
 <div class="wrap znc-admin-wrap">
     <h1><span class="dashicons dashicons-heart"></span> <?php esc_html_e( 'Net Cart — Diagnostics', 'zinckles-net-cart' ); ?></h1>
@@ -53,8 +83,12 @@ $map_table_exists = (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$map_table}'" );
         <h2><?php esc_html_e( 'Health Checks', 'zinckles-net-cart' ); ?></h2>
         <table class="widefat striped">
             <tr>
-                <td width="300"><?php esc_html_e( 'Global Cart Table', 'zinckles-net-cart' ); ?></td>
-                <td><?php echo $table_exists ? '<span style="color:#46b450;">✓ ' . esc_html( $table ) . '</span>' : '<span style="color:#dc3232;">✗ Table missing: ' . esc_html( $table ) . '</span>'; ?></td>
+                <td width="300"><?php esc_html_e( 'Cart Storage Engine', 'zinckles-net-cart' ); ?></td>
+                <td><span style="color:#46b450;">✓ wp_usermeta (v1.5.0)</span> — <small>Zero switch_to_blog(), shared across all sites</small></td>
+            </tr>
+            <tr>
+                <td><?php esc_html_e( 'Cart Meta Key', 'zinckles-net-cart' ); ?></td>
+                <td><code><?php echo esc_html( $meta_key ); ?></code></td>
             </tr>
             <tr>
                 <td><?php esc_html_e( 'Order Map Table', 'zinckles-net-cart' ); ?></td>
@@ -71,6 +105,33 @@ $map_table_exists = (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$map_table}'" );
             <tr>
                 <td><?php esc_html_e( 'HMAC Secret', 'zinckles-net-cart' ); ?></td>
                 <td><?php echo ! empty( $settings['hmac_secret'] ) ? '<span style="color:#46b450;">✓ Configured (' . esc_html( substr( $settings['hmac_secret'], 0, 8 ) ) . '…)</span>' : '<span style="color:#f0ad4e;">⚠ Not set</span>'; ?></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- v1.5.0: Architecture Info -->
+    <div class="znc-settings-section">
+        <h2><?php esc_html_e( 'Architecture (v1.5.0)', 'zinckles-net-cart' ); ?></h2>
+        <table class="widefat striped">
+            <tr>
+                <td width="300"><?php esc_html_e( 'Storage Method', 'zinckles-net-cart' ); ?></td>
+                <td>wp_usermeta — single shared table across all network sites</td>
+            </tr>
+            <tr>
+                <td><?php esc_html_e( 'switch_to_blog() Calls', 'zinckles-net-cart' ); ?></td>
+                <td><span style="color:#46b450;">0</span> — no blog switching for cart read/write</td>
+            </tr>
+            <tr>
+                <td><?php esc_html_e( 'REST API Calls', 'zinckles-net-cart' ); ?></td>
+                <td><span style="color:#46b450;">0</span> — no inter-site REST for cart operations</td>
+            </tr>
+            <tr>
+                <td><?php esc_html_e( 'Custom Tables (Cart)', 'zinckles-net-cart' ); ?></td>
+                <td><span style="color:#46b450;">0</span> — no custom cart table needed</td>
+            </tr>
+            <tr>
+                <td><?php esc_html_e( 'Memory Overhead', 'zinckles-net-cart' ); ?></td>
+                <td>Minimal — no WooCommerce re-initialization per site</td>
             </tr>
         </table>
     </div>
@@ -162,7 +223,7 @@ $map_table_exists = (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$map_table}'" );
                 <span class="znc-stat-label"><?php esc_html_e( 'Active Carts', 'zinckles-net-cart' ); ?></span>
             </div>
             <div class="znc-stat-card">
-                <span class="znc-stat-value"><?php echo esc_html( ZNC_Currency_Handler::format( $cart_value, $settings['base_currency'] ?? 'USD' ) ); ?></span>
+                <span class="znc-stat-value"><?php echo esc_html( $formatted_value ); ?></span>
                 <span class="znc-stat-label"><?php esc_html_e( 'Total Value', 'zinckles-net-cart' ); ?></span>
             </div>
         </div>

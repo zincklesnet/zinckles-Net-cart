@@ -1,12 +1,12 @@
 <?php
 /**
- * Main Admin — v1.4.2
+ * Main Admin — v1.5.0
  * Admin page on the main/checkout-host site showing global cart stats.
  *
- * v1.4.2 FIX: Constructor accepts $store + $checkout_host params.
- *             Quick Links use network_admin_url() for all network pages.
- *             Capability changed to manage_options (more reliable than manage_woocommerce
- *             since WooCommerce may not be active on all sites).
+ * v1.5.0: Dashboard stats now read from wp_usermeta via
+ *         ZNC_Global_Cart_Store::get_admin_stats() instead of
+ *         querying custom znc_global_cart table.
+ *         All other functionality preserved from v1.4.2.
  */
 defined( 'ABSPATH' ) || exit;
 
@@ -48,24 +48,23 @@ class ZNC_Main_Admin {
     }
 
     public function render_page() {
-        global $wpdb;
         $settings = get_site_option( 'znc_network_settings', array() );
         $host_id  = $this->host->get_host_id();
-        $prefix   = $wpdb->get_blog_prefix( $host_id );
-        $table    = $prefix . 'znc_global_cart';
-
-        $total_items = 0;
-        $total_users = 0;
-        $total_value = 0;
-        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
-
-        if ( $table_exists ) {
-            $total_items = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
-            $total_users = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT user_id) FROM {$table}" );
-            $total_value = (float) $wpdb->get_var( "SELECT COALESCE(SUM(line_total),0) FROM {$table}" );
-        }
-
         $enrolled = isset( $settings['enrolled_sites'] ) ? (array) $settings['enrolled_sites'] : array();
+
+        // v1.5.0: Stats from wp_usermeta via Store class
+        $stats = ZNC_Global_Cart_Store::get_admin_stats();
+
+        $total_items = $stats['total_items'];
+        $total_users = $stats['total_users'];
+        $total_value = $stats['total_value'];
+
+        $currency = isset( $settings['base_currency'] ) ? $settings['base_currency'] : 'USD';
+        if ( class_exists( 'ZNC_Currency_Handler' ) && method_exists( 'ZNC_Currency_Handler', 'format' ) ) {
+            $formatted_value = ZNC_Currency_Handler::format( $total_value, $currency );
+        } else {
+            $formatted_value = '$' . number_format( $total_value, 2 );
+        }
         ?>
         <div class="wrap znc-admin-wrap">
             <h1><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Zinckles Net Cart — Dashboard', 'zinckles-net-cart' ); ?></h1>
@@ -79,7 +78,7 @@ class ZNC_Main_Admin {
                     <span class="znc-stat-label"><?php esc_html_e( 'Active Carts', 'zinckles-net-cart' ); ?></span>
                 </div>
                 <div class="znc-stat-card">
-                    <span class="znc-stat-value"><?php echo esc_html( ZNC_Currency_Handler::format( $total_value ) ); ?></span>
+                    <span class="znc-stat-value"><?php echo esc_html( $formatted_value ); ?></span>
                     <span class="znc-stat-label"><?php esc_html_e( 'Total Value', 'zinckles-net-cart' ); ?></span>
                 </div>
                 <div class="znc-stat-card">
@@ -103,8 +102,8 @@ class ZNC_Main_Admin {
                 <table class="widefat striped">
                     <tr><td><?php esc_html_e( 'Plugin Version', 'zinckles-net-cart' ); ?></td><td><strong><?php echo esc_html( ZNC_VERSION ); ?></strong></td></tr>
                     <tr><td><?php esc_html_e( 'Checkout Host', 'zinckles-net-cart' ); ?></td><td>Blog ID <?php echo esc_html( $host_id ); ?> — <?php echo esc_html( get_blog_option( $host_id, 'blogname' ) ); ?></td></tr>
-                    <tr><td><?php esc_html_e( 'DB Table', 'zinckles-net-cart' ); ?></td><td><?php echo $table_exists ? '<span style="color:#46b450;">✓ Exists</span>' : '<span style="color:#dc3232;">✗ Missing</span>'; ?></td></tr>
-                    <tr><td><?php esc_html_e( 'Base Currency', 'zinckles-net-cart' ); ?></td><td><?php echo esc_html( $settings['base_currency'] ?? 'USD' ); ?></td></tr>
+                    <tr><td><?php esc_html_e( 'Cart Storage', 'zinckles-net-cart' ); ?></td><td><span style="color:#46b450;">✓ wp_usermeta (v1.5.0)</span></td></tr>
+                    <tr><td><?php esc_html_e( 'Base Currency', 'zinckles-net-cart' ); ?></td><td><?php echo esc_html( $currency ); ?></td></tr>
                 </table>
             </div>
         </div>
