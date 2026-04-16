@@ -2,8 +2,9 @@
 /**
  * Cart Sync — Replaces WooCommerce cart count/fragments with global cart data.
  *
- * Runs on ALL enrolled sites so header cart widgets, menu badges,
- * and WC mini-carts show the global cart count instead of the local one.
+ * v1.7.1 FIX: Constructor now accepts 0 args (uses singletons internally)
+ *             to match the v1.7.0 bootstrap which calls new ZNC_Cart_Sync().
+ *             Still accepts 2 args for backward compat.
  *
  * @package ZincklesNetCart
  * @since   1.5.1
@@ -18,9 +19,22 @@ class ZNC_Cart_Sync {
     /** @var ZNC_Checkout_Host */
     private $checkout_host;
 
-    public function __construct( ZNC_Global_Cart $global_cart, ZNC_Checkout_Host $checkout_host ) {
-        $this->global_cart    = $global_cart;
-        $this->checkout_host  = $checkout_host;
+    /**
+     * Constructor — accepts 0 or 2 arguments.
+     *
+     * v1.7.0 bootstrap calls: new ZNC_Cart_Sync()       (0 args)
+     * v1.6.x bootstrap calls: new ZNC_Cart_Sync($gc,$ch) (2 args)
+     *
+     * Both signatures now work.
+     */
+    public function __construct( $global_cart = null, $checkout_host = null ) {
+        $this->global_cart   = $global_cart instanceof ZNC_Global_Cart
+            ? $global_cart
+            : ZNC_Global_Cart::instance();
+
+        $this->checkout_host = $checkout_host instanceof ZNC_Checkout_Host
+            ? $checkout_host
+            : ZNC_Checkout_Host::instance();
     }
 
     public function init() {
@@ -33,7 +47,7 @@ class ZNC_Cart_Sync {
     public function override_fragments( $fragments ) {
         if ( ! is_user_logged_in() ) return $fragments;
 
-        $count    = $this->global_cart->get_item_count();
+        $count    = $this->global_cart->get_item_count( get_current_user_id() );
         $cart_url = $this->checkout_host->get_cart_url();
 
         $fragments['a.cart-contents'] = sprintf(
@@ -42,8 +56,7 @@ class ZNC_Cart_Sync {
             esc_attr__( 'View Global Cart', 'zinckles-net-cart' ),
             $count
         );
-
-        $fragments['.znc-cart-count']      = '<span class="znc-cart-count">' . $count . '</span>';
+        $fragments['.znc-cart-count']       = '<span class="znc-cart-count">' . $count . '</span>';
         $fragments['.cart-contents-count']  = '<span class="cart-contents-count">' . $count . '</span>';
         $fragments['.wc-cart-count']        = '<span class="wc-cart-count">' . $count . '</span>';
 
@@ -52,13 +65,13 @@ class ZNC_Cart_Sync {
 
     public function override_count( $count ) {
         if ( ! is_user_logged_in() ) return $count;
-        return $this->global_cart->get_item_count();
+        return $this->global_cart->get_item_count( get_current_user_id() );
     }
 
     public function inject_cart_data() {
         if ( ! is_user_logged_in() ) return;
 
-        $count    = $this->global_cart->get_item_count();
+        $count    = $this->global_cart->get_item_count( get_current_user_id() );
         $cart_url = $this->checkout_host->get_cart_url();
 
         echo '<script>var zncCartData=' . wp_json_encode( array(
@@ -70,7 +83,8 @@ class ZNC_Cart_Sync {
     public function admin_bar_cart( $wp_admin_bar ) {
         if ( ! is_user_logged_in() ) return;
 
-        $count = $this->global_cart->get_item_count();
+        $count = $this->global_cart->get_item_count( get_current_user_id() );
+
         $wp_admin_bar->add_node( array(
             'id'    => 'znc-global-cart',
             'title' => sprintf( '&#x1F6D2; Net Cart (%d)', $count ),

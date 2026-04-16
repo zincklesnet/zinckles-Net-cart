@@ -155,6 +155,12 @@ $currencies = array( 'USD','EUR','GBP','CAD','AUD','JPY','CNY','INR','BRL','MXN'
 endforeach; ?>
 <?php endif; ?>
 </div>
+<br>
+<button type="button" id="znc-detect-tutor" class="button button-secondary">
+<span class="dashicons dashicons-search" style="vertical-align:middle;margin-top:-2px"></span>
+<?php esc_html_e( 'Auto-Detect Tutor LMS Sites', 'zinckles-net-cart' ); ?>
+</button>
+<span id="znc-tutor-detect-status" class="znc-inline-status"></span>
 </td>
 </tr>
 </table>

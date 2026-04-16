@@ -29,6 +29,8 @@ class ZNC_Network_Admin {
             'znc_regenerate_secret'  => 'ajax_regenerate_secret',
             'znc_test_connection'    => 'ajax_test_connection',
             'znc_detect_point_types' => 'ajax_detect_point_types',
+            'znc_detect_points'      => 'ajax_detect_point_types',
+            'znc_detect_tutor'       => 'ajax_detect_tutor',
         );
         foreach ( $actions as $action => $method ) {
             if ( ! has_action( 'wp_ajax_' . $action ) ) {
@@ -386,4 +388,35 @@ class ZNC_Network_Admin {
             'message'   => 'Point types detected and saved!',
         ) );
     }
+
+    public static function ajax_detect_tutor() {
+        check_ajax_referer( 'znc_network_admin', 'nonce' );
+        if ( ! current_user_can( 'manage_network_options' ) ) {
+            wp_send_json_error( 'Unauthorized', 403 );
+        }
+        global $wpdb;
+        $settings    = get_site_option( 'znc_network_settings', array() );
+        $tutor_sites = array();
+        $sites       = get_sites( array( 'number' => 100 ) );
+        foreach ( $sites as $site ) {
+            $blog_id = absint( $site->blog_id );
+            $prefix  = $wpdb->get_blog_prefix( $blog_id );
+            $plugins = $wpdb->get_var( "SELECT option_value FROM {$prefix}options WHERE option_name = 'active_plugins' LIMIT 1" );
+            if ( $plugins && ( strpos( $plugins, 'tutor' ) !== false || strpos( $plugins, 'tutor-pro' ) !== false ) ) {
+                $count = $wpdb->get_var( "SELECT COUNT(*) FROM {$prefix}posts WHERE post_type = 'courses' AND post_status = 'publish'" );
+                $details = get_blog_details( $blog_id );
+                $tutor_sites[ $blog_id ] = array(
+                    'name'    => $details ? $details->blogname : "Site #{$blog_id}",
+                    'courses' => (int) $count,
+                );
+            }
+        }
+        $settings['tutor_sites'] = array_keys( $tutor_sites );
+        update_site_option( 'znc_network_settings', $settings );
+        wp_send_json_success( array(
+            'tutor'   => $tutor_sites,
+            'message' => sprintf( '%d Tutor LMS site(s) detected.', count( $tutor_sites ) ),
+        ) );
+    }
+
 }

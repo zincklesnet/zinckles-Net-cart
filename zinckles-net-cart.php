@@ -1,24 +1,23 @@
 <?php
 /**
- * Plugin Name: Zinckles Net Cart (BP Net Cart)
+ * Plugin Name: Zinckles Net Cart
  * Plugin URI:  https://zinckles.com
  * Description: Unified global cart across WooCommerce subsites in a WordPress multisite network.
- * Version:     1.7.0
+ * Version:     1.7.2
  * Author:      Zinckles
  * Author URI:  https://zinckles.com
  * License:     GPL-2.0-or-later
  * Network:     true
  * Text Domain: zinckles-net-cart
  *
- * Changelog v1.7.0:
+ * Changelog v1.7.2:
+ *  • Fixed enrollment mode mismatch ('auto' mode now recognized in interceptor)
  *  • Fixed checkout redirect loop (suppresses WC template_redirect on ZNC page)
- *  • Fixed diagnostics crash (get_items → get_cart)
- *  • Fixed hardcoded '$' in 6 locations → uses ZNC_Currency_Handler
- *  • Fixed grand total mixing currencies → per-currency subtotals
- *  • Fixed widgets showing "Product #123" → uses switch_to_blog() for names
- *  • Fixed double script localization (removed zncCart, kept zncFront)
- *  • Fixed missing nonce on ajax_get_count
- *  • Fixed variation data not sanitized deeply
+ *  • Fixed constructor mismatches (all classes accept 0 args for singleton bootstrap)
+ *  • Fixed Global Cart singleton + public make_key() + dual add_item() signatures
+ *  • Fixed Checkout Host singleton + __callStatic proxy for static URL calls
+ *  • Added WC Plugin Detector — scans all network sites for WC-dependent plugins
+ *  • Added Subsite Admin dashboard with enrollment status + WC plugin list
  *  • Built full MyCred Payment Engine (per-product point-type selection)
  *  • Built GamiPress↔MyCred Bridge (admin transfer controls)
  *  • Built ZNC_Currency_Handler (proper multi-currency support)
@@ -32,11 +31,13 @@
  *  • Integrated WC payment gateways into checkout flow
  *  • MyCred point deduction with rollback on failure
  *  • MyCred refund on order cancellation
+ *  • Tutor LMS auto-enrollment on order completion
+ *  • Booster for WooCommerce compatibility layer
  */
 defined( 'ABSPATH' ) || exit;
 
 /* ─── Constants ─── */
-define( 'ZNC_VERSION',    '1.7.0' );
+define( 'ZNC_VERSION',     '1.7.2' );
 define( 'ZNC_PLUGIN_FILE', __FILE__ );
 define( 'ZNC_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'ZNC_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
@@ -83,6 +84,9 @@ function znc_bootstrap() {
     $checkout_host = ZNC_Checkout_Host::instance();
     $global_cart   = ZNC_Global_Cart::instance();
 
+    /* ── WC Plugin Detector (always, all sites) ── */
+    ZNC_WC_Plugin_Detector::init();
+
     /* ── Network Admin AJAX (always) ── */
     ZNC_Network_Admin::register_ajax_handlers();
 
@@ -121,6 +125,9 @@ function znc_bootstrap() {
     if ( ! class_exists( 'WooCommerce' ) ) {
         return;
     }
+
+    /* ── Booster for WooCommerce compatibility ── */
+    znc_booster_compat();
 
     /* ── Currency Handler (all sites) ── */
     $currency_handler = new ZNC_Currency_Handler();
@@ -216,13 +223,61 @@ function znc_bootstrap() {
         wp_localize_script( 'znc-front', 'zncFront', array(
             'ajax_url'           => admin_url( 'admin-ajax.php' ),
             'nonce'              => wp_create_nonce( 'znc_cart_action' ),
-            'checkout_url'       => ZNC_Checkout_Host::get_checkout_url(),
-            'cart_url'           => ZNC_Checkout_Host::get_cart_url(),
+            'checkout_url'       => ZNC_Checkout_Host::instance()->get_checkout_url(),
+            'cart_url'           => ZNC_Checkout_Host::instance()->get_cart_url(),
             'is_logged_in'       => is_user_logged_in(),
             'i18n_empty'         => __( 'Your global cart is empty.', 'zinckles-net-cart' ),
             'i18n_clear_confirm' => __( 'Are you sure you want to clear your entire cart?', 'zinckles-net-cart' ),
-            'i18n_processing'    => __( 'Processing…', 'zinckles-net-cart' ),
+            'i18n_processing'    => __( 'Processing...', 'zinckles-net-cart' ),
             'i18n_error'         => __( 'An error occurred. Please try again.', 'zinckles-net-cart' ),
         ) );
     } );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  BOOSTER FOR WOOCOMMERCE COMPATIBILITY
+ *
+ *  Prevents Booster's checkout customization and redirect modules
+ *  from interfering with Net Cart's global checkout flow.
+ * ═══════════════════════════════════════════════════════════════ */
+function znc_booster_compat() {
+    // Only apply on the checkout host where ZNC handles checkout
+    if ( ! ZNC_Checkout_Host::instance()->is_checkout_host() ) {
+        return;
+    }
+
+    // Disable Booster's checkout customization on ZNC checkout pages
+    add_filter( 'wcj_checkout_customization_enabled', function ( $enabled ) {
+        global $post;
+        if ( $post instanceof WP_Post && has_shortcode( $post->post_content, 'znc_checkout' ) ) {
+            return false;
+        }
+        return $enabled;
+    }, 999 );
+
+    // Prevent Booster's empty cart redirect from firing on ZNC cart/checkout pages
+    add_action( 'template_redirect', function () {
+        global $post;
+        if ( ! $post instanceof WP_Post ) {
+            return;
+        }
+
+        $is_znc_page = has_shortcode( $post->post_content, 'znc_cart' )
+            || has_shortcode( $post->post_content, 'znc_checkout' )
+            || $post->post_name === 'cart-g'
+            || $post->post_name === 'checkout-g';
+
+        if ( $is_znc_page ) {
+            // Remove Booster's redirect modules that check WC cart status
+            if ( class_exists( 'WCJ_Checkout_Customization' ) ) {
+                remove_all_filters( 'woocommerce_checkout_redirect_empty_cart' );
+            }
+
+            // Suppress WC's own empty-cart redirect on ZNC pages
+            remove_action( 'template_redirect', 'wc_template_redirect' );
+
+            // Tell WC this is not its checkout (prevents it from checking cart status)
+            add_filter( 'woocommerce_is_checkout', '__return_false', 999 );
+        }
+    }, 0 ); // Priority 0 = before WC and Booster
 }

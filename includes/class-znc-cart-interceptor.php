@@ -3,9 +3,19 @@
  * Cart Interceptor — Hooks into WC add-to-cart and syncs to global cart.
  *
  * Fixes from v1.6.1:
- *  • Added nonce verification to ajax_get_count()
- *  • Deep sanitization of variation data
- *  • Removed duplicate script localization (zncCart removed; uses zncFront only)
+ *   • Added nonce verification to ajax_get_count()
+ *   • Deep sanitization of variation data
+ *   • Removed duplicate script localization (zncCart removed; uses zncFront only)
+ *
+ * v1.7.1 FIX:
+ *   • Fixed enrollment type mismatch — enrolled_sites stores strings ('2')
+ *     but get_current_blog_id() returns int (2). array_map('absint', ...)
+ *     normalizes both arrays so strict in_array() works correctly.
+ *
+ * v1.7.2 FIX:
+ *   • Added 'auto' enrollment mode support — Network Settings UI saves
+ *     enrollment_mode as 'auto' but is_site_participating() only checked
+ *     for 'opt-out'. Mode 'auto' now treated same as 'opt-out'.
  *
  * @package ZincklesNetCart
  * @since   1.7.0
@@ -23,9 +33,9 @@ class ZNC_Cart_Interceptor {
 
     public function init() {
         /* ── WooCommerce hooks ── */
-        add_action( 'woocommerce_add_to_cart',                     array( $this, 'on_add_to_cart' ), 10, 6 );
-        add_action( 'woocommerce_cart_item_removed',               array( $this, 'on_item_removed' ), 10, 2 );
-        add_action( 'woocommerce_after_cart_item_quantity_update', array( $this, 'on_qty_updated' ), 10, 4 );
+        add_action( 'woocommerce_add_to_cart',                       array( $this, 'on_add_to_cart' ), 10, 6 );
+        add_action( 'woocommerce_cart_item_removed',                 array( $this, 'on_item_removed' ), 10, 2 );
+        add_action( 'woocommerce_after_cart_item_quantity_update',    array( $this, 'on_qty_updated' ), 10, 4 );
 
         /* ── AJAX handlers ── */
         add_action( 'wp_ajax_znc_add_to_global_cart', array( $this, 'ajax_add_item' ) );
@@ -40,7 +50,7 @@ class ZNC_Cart_Interceptor {
 
     /* ──────────────────────────────────────────────────────────────
      *  WC HOOKS
-     * ──────────────────────────────────────────────────────────── */
+     * ────────────────────────────────────────────────────────────── */
 
     /**
      * When WC adds to local cart, also add to global cart.
@@ -79,7 +89,6 @@ class ZNC_Cart_Interceptor {
             $removed['product_id'],
             $removed['variation_id'] ?? 0
         );
-
         $this->cart->remove_item( $user_id, $key );
     }
 
@@ -90,8 +99,8 @@ class ZNC_Cart_Interceptor {
         if ( ! is_user_logged_in() ) return;
         if ( ! $this->is_site_participating() ) return;
 
-        $user_id  = get_current_user_id();
-        $wc_item  = $wc_cart->get_cart_item( $cart_item_key );
+        $user_id = get_current_user_id();
+        $wc_item = $wc_cart->get_cart_item( $cart_item_key );
         if ( ! $wc_item ) return;
 
         $key = $this->cart->make_key(
@@ -99,13 +108,12 @@ class ZNC_Cart_Interceptor {
             $wc_item['product_id'],
             $wc_item['variation_id'] ?? 0
         );
-
         $this->cart->update_quantity( $user_id, $key, max( 1, absint( $quantity ) ) );
     }
 
     /* ──────────────────────────────────────────────────────────────
      *  AJAX HANDLERS
-     * ──────────────────────────────────────────────────────────── */
+     * ────────────────────────────────────────────────────────────── */
 
     /**
      * AJAX: Add item to global cart.
@@ -218,7 +226,6 @@ class ZNC_Cart_Interceptor {
      * FIXED: Now has nonce verification (was missing in v1.6.1).
      */
     public function ajax_get_count() {
-        // FIX: Added nonce check (was completely missing in v1.6.1)
         check_ajax_referer( 'znc_cart_action', 'nonce' );
 
         if ( ! is_user_logged_in() ) {
@@ -231,26 +238,31 @@ class ZNC_Cart_Interceptor {
 
     /* ──────────────────────────────────────────────────────────────
      *  HELPERS
-     * ──────────────────────────────────────────────────────────── */
+     * ────────────────────────────────────────────────────────────── */
 
     /**
      * Check if the current site participates in Net Cart.
      *
+     * v1.7.2 FIX: Added 'auto' mode support + absint normalization.
+     *
      * @return bool
      */
     public function is_site_participating() {
-        $settings   = get_site_option( 'znc_network_settings', array() );
-        $blog_id    = get_current_blog_id();
-        $mode       = $settings['enrollment_mode'] ?? 'opt-in';
-        $enrolled   = (array) ( $settings['enrolled_sites'] ?? array() );
-        $blocked    = (array) ( $settings['blocked_sites'] ?? array() );
+        $settings = get_site_option( 'znc_network_settings', array() );
+        $blog_id  = get_current_blog_id();
+        $mode     = $settings['enrollment_mode'] ?? 'opt-in';
+
+        // v1.7.2 FIX: Normalize to int so strict in_array works
+        $enrolled = array_map( 'absint', (array) ( $settings['enrolled_sites'] ?? array() ) );
+        $blocked  = array_map( 'absint', (array) ( $settings['blocked_sites'] ?? array() ) );
 
         if ( in_array( $blog_id, $blocked, true ) ) {
             return false;
         }
 
-        if ( $mode === 'opt-out' ) {
-            return true; // All sites participate unless blocked
+        // v1.7.2 FIX: 'auto' mode means all sites participate (same as opt-out)
+        if ( $mode === 'opt-out' || $mode === 'auto' ) {
+            return true;
         }
 
         // opt-in mode
@@ -271,7 +283,6 @@ class ZNC_Cart_Interceptor {
         }
 
         $clean = array();
-
         foreach ( $variation as $key => $value ) {
             // Only allow attribute_* keys
             $key = sanitize_key( $key );

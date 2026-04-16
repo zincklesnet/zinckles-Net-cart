@@ -2,6 +2,9 @@
 /**
  * Tutor LMS Engine — Integrates Tutor LMS courses with Net Cart.
  *
+ * v1.7.2 FIX: Constructor now accepts 0 args (uses singleton internally)
+ *             to match the bootstrap which calls new ZNC_Tutor_Engine().
+ *
  * @package ZincklesNetCart
  * @since   1.6.0
  */
@@ -12,8 +15,16 @@ class ZNC_Tutor_Engine {
     /** @var ZNC_Global_Cart */
     private $global_cart;
 
-    public function __construct( ZNC_Global_Cart $global_cart ) {
-        $this->global_cart = $global_cart;
+    /**
+     * Constructor — accepts 0 or 1 argument.
+     *
+     * v1.7.2 bootstrap calls: new ZNC_Tutor_Engine()    (0 args)
+     * v1.6.x bootstrap calls: new ZNC_Tutor_Engine($gc) (1 arg)
+     */
+    public function __construct( $gc = null ) {
+        $this->global_cart = $gc instanceof ZNC_Global_Cart
+            ? $gc
+            : ZNC_Global_Cart::instance();
     }
 
     public function init() {

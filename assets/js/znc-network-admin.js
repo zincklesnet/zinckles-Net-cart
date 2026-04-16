@@ -152,4 +152,25 @@
             });
     });
 
+
+    /* ── Detect Tutor LMS Sites ── */
+    $doc.on('click', '#znc-detect-tutor', function(){
+        ajaxPost('znc_detect_tutor', {}, this)
+            .done(function(r){
+                if (r.success && r.data) {
+                    var html = '';
+                    if (r.data.tutor && Object.keys(r.data.tutor).length) {
+                        $.each(r.data.tutor, function(bid, info){
+                            html += '<span class="znc-tag">' + info.name + ' (ID: ' + bid + ', ' + info.courses + ' courses)</span> ';
+                        });
+                    } else {
+                        html = '<em>No Tutor LMS sites found.</em>';
+                    }
+                    $('#znc-tutor-sites').html(html);
+                    showNotice(r.data.message || 'Tutor LMS detection complete.');
+                } else {
+                    showNotice('Tutor detection failed.', 'error');
+                }
+            });
+    });
 })(jQuery);
